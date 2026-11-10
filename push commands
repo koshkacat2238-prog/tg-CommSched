@@ -1,0 +1,3 @@
+git add .
+git commit -m "Merge remote changes"
+#copy the part above to push changes to the project. be careful tho: don't override any files with ur own
