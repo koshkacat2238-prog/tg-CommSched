@@ -11,17 +11,22 @@ async def get_user(user_id: int) -> Optional[dict]:
 
 async def get_or_create_user(user_id: int, username: str | None, full_name: str) -> dict:
     user = await get_user(user_id)
-    if user: return user
+    if user:
+        return user
 
     role = "owner" if user_id == OWNER_ID else "student"
+
     async with db().acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO users(user_id, username, full_name, role) VALUES($1,$2,$3,$4)",
+            # Используем RETURNING *, чтобы получить созданную запись сразу
+            row = await conn.fetchrow(
+                "INSERT INTO users(user_id, username, full_name, role) "
+                "VALUES($1,$2,$3,$4) RETURNING *",
                 user_id, username, full_name, role
             )
-            await audit.log(conn, user_id, "user_register", user_id, f"role={role}")
-    return await get_user(user_id)
+            await audit.log(user_id, "user_register", user_id, f"role={role}")
+
+    return dict(row)
 
 
 async def list_users(limit: int = 30) -> list[dict]:

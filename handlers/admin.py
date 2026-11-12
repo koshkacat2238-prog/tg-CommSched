@@ -9,7 +9,7 @@ from config import ADMIN_ROLES
 from handlers.states import AddSchedule, SetGroupFSM, BanFSM
 from services import users, bans, schedule, audit
 from ui import keyboards, texts
-from ui.formatters import format_user_card
+from ui.formaters import format_user_card
 
 router = Router()
 
@@ -105,3 +105,70 @@ async def logs_menu(cb: CallbackQuery, db_user: dict):
     for l in logs:
         lines.append(f"• {l['created_at'].strftime('%m-%d %H:%M')} {l['action']} (ID {l['actor_id']}) {l['details'] or ''}")
     await cb.message.edit_text("\n".join(lines), reply_markup=keyboards.back_to_menu())
+@router.callback_query(F.data == "menu:add_schedule")
+async def add_sched_start(cb: CallbackQuery, db_user: dict, state: FSMContext):
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
+    await state.set_state(AddSchedule.group)
+    await cb.message.edit_text("Введите название группы:")
+
+@router.message(AddSchedule.group)
+async def add_sched_group(message: Message, state: FSMContext):
+    await state.update_data(group=message.text.strip())
+    await state.set_state(AddSchedule.day)
+    await message.answer("Введите день недели (1=Пн, 2=Вт... 7=Вс):")
+
+@router.message(AddSchedule.day)
+async def add_sched_day(message: Message, state: FSMContext):
+    try:
+        d = int(message.text.strip())
+        assert 1 <= d <= 7
+    except:
+        return await message.answer("Ошибка! Введите число от 1 до 7:")
+    await state.update_data(day=d-1)
+    await state.set_state(AddSchedule.time)
+    await message.answer("Введите время (например, 10:30):")
+
+@router.message(AddSchedule.time)
+async def add_sched_time(message: Message, state: FSMContext):
+    await state.update_data(time=message.text.strip())
+    await state.set_state(AddSchedule.subject)
+    await message.answer("Введите название предмета:")
+
+@router.message(AddSchedule.subject)
+async def add_sched_subject(message: Message, state: FSMContext, db_user: dict):
+    data = await state.get_data()
+    await schedule.add_schedule(data["day"], data["time"], message.text.strip(), data["group"])
+    await state.clear()
+    await message.answer("✅ Занятие добавлено в расписание!", reply_markup=keyboards.main_menu(db_user["role"]))
+
+
+# --- НАЗНАЧЕНИЕ ГРУППЫ ---
+@router.callback_query(F.data.startswith("usr:group:"))
+async def user_group_prompt(cb: CallbackQuery, db_user: dict, state: FSMContext):
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Недостаточно прав", show_alert=True)
+
+    uid = int(cb.data.split(":")[2])
+    await state.update_data(target_uid=uid)
+    await state.set_state(SetGroupFSM.waiting)  # Включаем режим ожидания текста
+
+    await cb.message.answer("Введите название группы (или '-' чтобы очистить, /cancel для отмены):")
+    await cb.answer()
+
+
+@router.message(SetGroupFSM.waiting)
+async def user_group_input(message: Message, db_user: dict, state: FSMContext):
+    # Этот хендлер сработает, когда вы напишете текст, пока бот в состоянии SetGroupFSM.waiting
+    data = await state.get_data()
+    group = message.text.strip()
+    if group == "-":
+        group = ""
+
+    await users.set_group(data["target_uid"], group, db_user["user_id"])
+    await state.clear()  # Выключаем режим ожидания
+
+    await message.answer(
+        f"✅ Группа обновлена: <b>{group or '—'}</b>",
+        reply_markup=keyboards.main_menu(db_user["role"]),
+    )
