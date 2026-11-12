@@ -57,3 +57,15 @@ def ban_duration_keyboard(user_id: int) -> InlineKeyboardMarkup:
     kb.button(text="⬅️ Отмена", callback_data=f"usr:card:{user_id}")
     kb.adjust(3, 1)
     return kb.as_markup()
+
+def schedule_nav() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Пн", callback_data="sched:day:0")
+    kb.button(text="Вт", callback_data="sched:day:1")
+    kb.button(text="Ср", callback_data="sched:day:2")
+    kb.button(text="Чт", callback_data="sched:day:3")
+    kb.button(text="Пт", callback_data="sched:day:4")
+    kb.button(text="Сб", callback_data="sched:day:5")
+    kb.button(text="⬅️ В меню", callback_data="menu:main")
+    kb.adjust(4, 3, 1) # 5 дней в ряд, кнопка меню снизу
+    return kb.as_markup()

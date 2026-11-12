@@ -1,3 +1,4 @@
+from aiogram.client.default import DefaultBotProperties
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
@@ -18,7 +19,10 @@ logging.basicConfig(level=logging.INFO)
 async def main():
     await init_pool()
     storage = RedisStorage.from_url(REDIS_URL, key_builder=DefaultKeyBuilder(with_bot_id=True))
-    bot = Bot(token=BOT_TOKEN)
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode="HTML")  # <--- ДОБАВИТЬ ЭТО
+    )
     dp = Dispatcher(storage=storage)
 
     dp.message.middleware(AuthMiddleware())
