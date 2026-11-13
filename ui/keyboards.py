@@ -1,3 +1,4 @@
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import ADMIN_ROLES, TEACHER_ROLES
@@ -6,16 +7,11 @@ from config import ADMIN_ROLES, TEACHER_ROLES
 def main_menu(role: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📅 Расписание", callback_data="menu:schedule")
-    kb.button(text="📚 Домашние задания", callback_data="menu:hw")
-
-    if role in TEACHER_ROLES:
-        kb.button(text="➕ Добавить ДЗ", callback_data="menu:add_hw")
 
     if role in ADMIN_ROLES:
         kb.button(text="👥 Пользователи", callback_data="menu:users")
         kb.button(text="🚫 Баны", callback_data="menu:bans")
         kb.button(text="📜 Логи", callback_data="menu:logs")
-        kb.button(text="➕ Добавить занятие", callback_data="menu:add_schedule")
 
     kb.adjust(2, 1, 1, 2)
     return kb.as_markup()
@@ -69,3 +65,9 @@ def schedule_nav() -> InlineKeyboardMarkup:
     kb.button(text="⬅️ В меню", callback_data="menu:main")
     kb.adjust(4, 3, 1) # 5 дней в ряд, кнопка меню снизу
     return kb.as_markup()
+def persistent_menu() -> ReplyKeyboardMarkup:
+    """Клавиатура, которая всегда висит внизу экрана."""
+    kb = [
+        [KeyboardButton(text="🏠 Главное меню")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)

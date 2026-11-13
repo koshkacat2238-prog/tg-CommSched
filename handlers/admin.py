@@ -9,7 +9,7 @@ from config import ADMIN_ROLES
 from handlers.states import AddSchedule, SetGroupFSM, BanFSM
 from services import users, bans, schedule, audit
 from ui import keyboards, texts
-from ui.formaters import format_user_card
+from ui.formatters import format_user_card
 
 router = Router()
 
@@ -20,22 +20,46 @@ async def cancel_any(message: Message, state: FSMContext, db_user: dict):
 
 # --- Управление пользователями ---
 @router.callback_query(F.data == "menu:users")
-async def users_list(cb: CallbackQuery, db_user: dict):
+async def users_group_list(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
-    users_list = await users.list_users(30)
+
+    groups = await users.get_groups_with_users()
+
+    kb = InlineKeyboardBuilder()
+    for g in groups:
+        kb.button(text=f"📁 {g}", callback_data=f"usr:grp:{g}")
+
+    kb.button(text="👤 Без группы", callback_data="usr:grp:None")
+    kb.button(text="⬅️ В меню", callback_data="menu:main")
+    kb.adjust(2, 1, 1)  # Красиво выравниваем кнопки
+
+    await cb.message.edit_text("👥 Выберите группу для просмотра:", reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("usr:grp:"))
+async def users_in_group(cb: CallbackQuery, db_user: dict):
+    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    group_name = cb.data.split(":", 2)[2]
+    users_list = await users.list_users_by_group(group_name)
+
     kb = InlineKeyboardBuilder()
     for u in users_list:
         status = "🚫" if u["is_banned"] else "👤"
         kb.button(text=f"{status} {u['full_name']} ({u['role']})", callback_data=f"usr:card:{u['user_id']}")
-    kb.button(text="⬅️ В меню", callback_data="menu:main")
+
+    kb.button(text="⬅️ К группам", callback_data="menu:users")
     kb.adjust(1)
-    await cb.message.edit_text("👥 Пользователи:", reply_markup=kb.as_markup())
+
+    display_name = "Без группы" if group_name == "None" else group_name
+    await cb.message.edit_text(f"👥 Пользователи в группе <b>{display_name}</b>:", reply_markup=kb.as_markup())
 
 @router.callback_query(F.data.startswith("usr:card:"))
 async def user_card_view(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
     uid = int(cb.data.split(":")[2])
     u = await users.get_user(uid)
+    if not u:
+        return await cb.answer("Пользователь не найден", show_alert=True)
     await cb.message.edit_text(format_user_card(u), reply_markup=keyboards.user_card(uid, bool(u["is_banned"])))
 
 @router.callback_query(F.data.startswith("usr:role:"))
@@ -116,6 +140,7 @@ async def add_sched_start(cb: CallbackQuery, db_user: dict, state: FSMContext):
     # Включаем ожидание первого ответа
     await state.set_state(AddSchedule.group)
     await cb.message.edit_text("Шаг 1/8. Введите название группы (например, МЭиТ26-8):")
+    await cb.answer()
 
 
 # 2. Получаем группу и спрашиваем день

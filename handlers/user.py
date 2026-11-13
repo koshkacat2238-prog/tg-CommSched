@@ -1,53 +1,42 @@
-from datetime import datetime, timedelta
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
-from services import schedule
-from ui import keyboards, formaters
+from aiogram.types import CallbackQuery, InlineKeyboardButton, WebAppInfo
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from database import db
 
 router = Router()
 
-DAYS_RU = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-
-
-def get_date_for_weekday(target_weekday: int) -> str:
-    """Вычисляет дату для выбранного дня недели (0=Пн, 6=Вс)."""
-    today = datetime.now()
-    # В Python 0 = Понедельник, 6 = Воскресенье. В нашей БД так же.
-    current_weekday = today.weekday()
-
-    # Вычисляем разницу дней
-    days_ahead = target_weekday - current_weekday
-    if days_ahead < 0:  # Если день уже прошел на этой неделе, берем следующую
-        days_ahead += 7
-
-    target_date = today + timedelta(days=days_ahead)
-    return target_date.strftime("%d.%m.%Y")
-
 
 @router.callback_query(F.data == "menu:schedule")
-async def menu_schedule(cb: CallbackQuery, db_user: dict):
+async def open_webapp(cb: CallbackQuery, db_user: dict):
     if not db_user["group_name"]:
-        return await cb.answer("Вам не назначена группа!", show_alert=True)
+        return await cb.answer("Группа не назначена. Обратитесь к администратору.", show_alert=True)
+
+    # ВСТАВЬТЕ СЮДА ВАШ URL (пока тестируете локально - ссылку из ngrok)
+    webapp_url = f"https://sixtieth-parsley-singular.ngrok-free.dev/?group={db_user['group_name']}"
+
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="📅 Открыть расписание",
+        web_app=WebAppInfo(url=webapp_url)
+    )
 
     await cb.message.edit_text(
-        f"📅 Расписание для группы <b>{db_user['group_name']}</b>\nВыберите день:",
-        reply_markup=keyboards.schedule_nav()
+        "Нажмите кнопку ниже, чтобы открыть интерактивное расписание:",
+        reply_markup=kb.as_markup()
     )
 
+    async def get_groups_with_users() -> list[str]:
+        """Возвращает список уникальных групп, у которых есть участники."""
+        rows = await db().fetch(
+            "SELECT DISTINCT group_name FROM users WHERE group_name IS NOT NULL AND group_name != '' ORDER BY group_name"
+        )
+        return [r['group_name'] for r in rows]
 
-@router.callback_query(F.data.startswith("sched:day:"))
-async def view_schedule_day(cb: CallbackQuery, db_user: dict):
-    day_idx = int(cb.data.split(":")[2])
-    lessons = await schedule.get_schedule(db_user["group_name"], day_idx)
-
-    # Получаем правильную дату для этого дня
-    date_str = get_date_for_weekday(day_idx)
-
-    text = formaters.format_schedule_day(
-        day_name=DAYS_RU[day_idx],
-        date_str=date_str,
-        group_name=db_user["group_name"],
-        lessons=lessons
-    )
-
-    await cb.message.edit_text(text, reply_markup=keyboards.schedule_nav())
+    async def list_users_by_group(group_name: str) -> list[dict]:
+        """Возвращает список пользователей из конкретной группы."""
+        if group_name == "None":  # Специальный маркер для тех, у кого нет группы
+            rows = await db().fetch(
+                "SELECT * FROM users WHERE group_name IS NULL OR group_name = '' ORDER BY created_at DESC")
+        else:
+            rows = await db().fetch("SELECT * FROM users WHERE group_name = $1 ORDER BY created_at DESC", group_name)
+        return [dict(r) for r in rows]

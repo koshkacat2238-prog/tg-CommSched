@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Расписание</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 10px; background: var(--tg-theme-bg-color, #17212b); color: var(--tg-theme-text-color, #f5f5f5); }
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        input[type="date"] { background: var(--tg-theme-secondary-bg-color, #232e3c); color: var(--tg-theme-text-color, #f5f5f5); border: 1px solid rgba(255,255,255,0.1); padding: 8px; border-radius: 8px; font-size: 14px; flex-grow: 1; }
+        .nav-buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+        button { background: var(--tg-theme-button-color, #2b5278); color: var(--tg-theme-button-text-color, #fff); border: none; padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; flex: 1; }
+        button:active { opacity: 0.8; }
+        #search-btn { background: #2e7d32; flex: 0 0 auto; }
+        .date-header { margin-top: 20px; margin-bottom: 10px; font-size: 16px; font-weight: bold; color: #64b5f6; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 10px 5px; text-align: left; vertical-align: top; }
+        th { background: rgba(255,255,255,0.05); font-weight: bold; color: var(--tg-theme-hint-color, #7f91a4); }
+        .time { font-weight: bold; white-space: nowrap; }
+        .type { color: #64b5f6; font-size: 12px; }
+        .teacher { color: #81c784; font-size: 13px; }
+        .room { color: #ffb74d; font-size: 13px; }
+        .hw { background: rgba(255, 193, 7, 0.1); color: #ffd54f; border-radius: 4px; padding: 2px 6px; font-size: 12px; display: inline-block; margin-bottom: 4px;}
+        .empty-msg { text-align: center; margin-top: 30px; color: #7f91a4; }
+
+        dialog { border: none; border-radius: 12px; background: var(--tg-theme-bg-color, #17212b); color: var(--tg-theme-text-color, #f5f5f5); padding: 20px; width: 90%; max-width: 400px; box-sizing: border-box; }
+        dialog::backdrop { background: rgba(0,0,0,0.5); }
+        dialog textarea, dialog input { width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: var(--tg-theme-secondary-bg-color, #232e3c); color: white; box-sizing: border-box;}
+        dialog button { width: 100%; margin-top: 5px; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: white; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 1000; }
+    </style>
+</head>
+<body>
+    <h3 id="title">Загрузка...</h3>
+
+    <div class="controls">
+        <input type="date" id="date-picker">
+        <button id="search-btn">🔍 Найти</button>
+    </div>
+
+    <div class="nav-buttons">
+        <button id="prev-week">⬅️ Назад</button>
+        <button id="current-week">Текущая</button>
+        <button id="next-week">Вперед ➡️</button>
+    </div>
+
+    <div id="schedule-container">Загрузка...</div>
+
+    <dialog id="hw-modal">
+        <h3 style="margin-top: 0;" id="hw-modal-title">Добавить ДЗ</h3>
+        <div style="margin-bottom: 10px; font-weight: bold; color: #64b5f6;" id="hw-lesson-info"></div>
+        <textarea id="hw-desc" rows="3" placeholder="Описание задания"></textarea>
+        <label style="font-size: 12px; color: #aaa;">Дедлайн:</label>
+        <input type="date" id="hw-due">
+        <button id="save-hw-btn" style="background: #2e7d32;">Сохранить</button>
+        <button id="close-hw-btn" style="background: #555;">Отмена</button>
+    </dialog>
+
+    <div id="toast" class="toast">ДЗ добавлено!</div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const groupName = urlParams.get('group') || 'МЭиТ26-8';
+        const userId = tg.initDataUnsafe?.user?.id;
+
+        document.getElementById('title').innerText = `Группа ${groupName}`;
+
+        let currentDate = new Date();
+        let currentFocusDate = null;
+        let isTeacher = false;
+
+        let hwModalSubject = "";
+        let hwModalTeacher = "";
+        let hwModalDate = "";
+        let isEditing = false;
+
+        async function checkRole() {
+            if (!userId) return;
+            try {
+                const res = await fetch(`/api/role/${userId}`);
+                const data = await res.json();
+                if (["teacher", "admin", "owner"].includes(data.role)) isTeacher = true;
+            } catch (e) { console.error("Ошибка роли", e); }
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.innerText = message;
+            toast.style.opacity = '1';
+            setTimeout(() => { toast.style.opacity = '0'; }, 2500);
+        }
+
+        const hwModal = document.getElementById('hw-modal');
+
+        function openHwModal(subject, date, teacher, desc = "", due = "") {
+            hwModalSubject = subject;
+            hwModalTeacher = teacher;
+            hwModalDate = date;
+
+            document.getElementById('hw-lesson-info').innerText = `${subject} — ${formatDate(date)}`;
+            document.getElementById('hw-desc').value = desc;
+
+            if (due) {
+                document.getElementById('hw-due').value = due;
+                isEditing = true;
+                document.getElementById('hw-modal-title').innerText = "Редактировать ДЗ";
+            } else {
+                const d = new Date(date);
+                d.setDate(d.getDate() + 7);
+                document.getElementById('hw-due').value = d.toISOString().split('T')[0];
+                isEditing = false;
+                document.getElementById('hw-modal-title').innerText = "Новое ДЗ";
+            }
+            hwModal.showModal();
+        }
+
+        document.getElementById('close-hw-btn').addEventListener('click', () => hwModal.close());
+
+        document.getElementById('save-hw-btn').addEventListener('click', async () => {
+            const description = document.getElementById('hw-desc').value.trim();
+            const due = document.getElementById('hw-due').value;
+
+            if (!description || !due) {
+                alert("Заполните описание и дедлайн!");
+                return;
+            }
+
+            const payload = { user_id: userId, group_name: groupName, subject: hwModalSubject, description: description, lesson_date: hwModalDate, teacher: hwModalTeacher, due_date: due };
+            const method = isEditing ? 'PUT' : 'POST';
+
+            try {
+                const res = await fetch('/api/homework', {
+                    method: method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    hwModal.close();
+                    showToast(isEditing ? "✏️ ДЗ обновлено!" : "✅ ДЗ добавлено!");
+                    setTimeout(() => loadSchedule(currentDate, currentFocusDate), 150);
+                } else {
+                    alert("Ошибка: " + (await res.json()).detail);
+                }
+            } catch (e) { alert("Ошибка сети"); }
+        });
+
+        function parseLocalDate(dateStr) {
+            if (!dateStr) return new Date();
+            const parts = dateStr.split('-');
+            if (parts.length !== 3 || parseInt(parts[0]) < 2000) return new Date();
+            return new Date(parts[0], parts[1] - 1, parts[2]);
+        }
+
+        function getMonday(d) {
+            d = new Date(d);
+            const day = d.getDay();
+            const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+            return new Date(d.setDate(diff));
+        }
+
+        function formatDate(dateStr) {
+            const parts = dateStr.split('-');
+            const localDate = new Date(parts[0], parts[1] - 1, parts[2]);
+            const options = { weekday: 'long', month: 'long', day: 'numeric' };
+            return localDate.toLocaleDateString('ru-RU', options);
+        }
+
+        function formatDateForApi(date) {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}.${m}.${d}`;
+        }
+
+        async function loadSchedule(baseDate, focusDate = null) {
+            const container = document.getElementById('schedule-container');
+            container.innerHTML = 'Загрузка...';
+            currentFocusDate = focusDate;
+
+            const monday = getMonday(baseDate);
+            const sunday = new Date(monday);
+            sunday.setDate(monday.getDate() + 6);
+
+            const startStr = formatDateForApi(monday);
+            const endStr = formatDateForApi(sunday);
+
+            try {
+                const response = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?start=${startStr}&end=${endStr}`);
+                if (!response.ok) throw new Error('Ошибка сети');
+
+                const data = await response.json();
+                const schedule = data.schedule || [];
+                const homeworks = data.homeworks || [];
+
+                if (schedule.length === 0) {
+                    container.innerHTML = '<div class="empty-msg">На эту неделю занятий нет. 🎉</div>';
+                    return;
+                }
+
+                const grouped = {};
+                schedule.forEach(les => {
+                    if (!grouped[les.date]) grouped[les.date] = [];
+                    grouped[les.date].push(les);
+                });
+
+                let html = '';
+                let hasRenderedSomething = false;
+
+                for (const date in grouped) {
+                    if (focusDate && date !== focusDate) continue;
+
+                    hasRenderedSomething = true;
+                    html += `<div class="date-header">📅 ${formatDate(date)}</div>`;
+                    html += '<table><tr><th>Время</th><th>Занятие</th><th>ДЗ</th></tr>';
+
+                    grouped[date].forEach(les => {
+                        // Ищем ДЗ строго по дате, предмету и преподавателю
+                        const hw = homeworks.find(h =>
+                            h.lesson_date === les.date &&
+                            h.subject === les.subject &&
+                            (h.teacher || '') === (les.teacher || '')
+                        );
+
+                        let hwText = '—';
+                        if (hw) {
+                            hwText = `<span class="hw">${hw.description}</span>`;
+                            if (isTeacher) {
+                                const safeSub = encodeURIComponent(les.subject);
+                                const safeTeach = encodeURIComponent(les.teacher || '');
+                                const safeDesc = encodeURIComponent(hw.description);
+
+                                hwText += `<br><button class="edit-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" data-desc="${safeDesc}" data-due="${hw.due_date}" style="background: transparent; color: #64b5f6; border: none; padding: 0 5px; cursor: pointer; font-size: 16px; flex: none; box-shadow: none;" title="Редактировать">✏️</button>`;
+                                hwText += `<button class="del-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" style="background: transparent; color: #ff5252; border: none; padding: 0 5px; cursor: pointer; font-size: 16px; flex: none; box-shadow: none;" title="Удалить">🗑</button>`;
+                            }
+                        } else if (isTeacher) {
+                            const safeSubject = encodeURIComponent(les.subject);
+                            const safeTeach = encodeURIComponent(les.teacher || '');
+                            hwText = `<button class="add-hw-btn" data-subject="${safeSubject}" data-date="${les.date}" data-teacher="${safeTeach}" style="padding: 4px 8px; font-size: 12px; flex: none; background: #2e7d32;">➕</button>`;
+                        }
+
+                        html += `<tr>
+                            <td class="time">${les.time_start}<br>${les.time_end}</td>
+                            <td>
+                                <b>${les.subject}</b><br>
+                                <span class="type">${les.type}</span><br>
+                                <span class="teacher">👨‍🏫 ${les.teacher || '—'}</span><br>
+                                <span class="room">📍 ${les.room || '—'}</span>
+                            </td>
+                            <td>${hwText}</td>
+                        </tr>`;
+                    });
+                    html += '</table>';
+                }
+
+                if (focusDate && !hasRenderedSomething) {
+                    container.innerHTML = `<div class="empty-msg">На ${formatDate(focusDate)} занятий нет. 🎉</div>`;
+                } else {
+                    container.innerHTML = html;
+                }
+            } catch (e) {
+                container.innerText = 'Не удалось загрузить расписание.';
+                console.error(e);
+            }
+        }
+
+        document.getElementById('schedule-container').addEventListener('click', async (e) => {
+            if (e.target.classList.contains('add-hw-btn')) {
+                openHwModal(
+                    decodeURIComponent(e.target.getAttribute('data-subject')),
+                    e.target.getAttribute('data-date'),
+                    decodeURIComponent(e.target.getAttribute('data-teacher') || '')
+                );
+            }
+
+            if (e.target.classList.contains('edit-hw-btn')) {
+                openHwModal(
+                    decodeURIComponent(e.target.getAttribute('data-subject')),
+                    e.target.getAttribute('data-date'),
+                    decodeURIComponent(e.target.getAttribute('data-teacher') || ''),
+                    decodeURIComponent(e.target.getAttribute('data-desc')),
+                    e.target.getAttribute('data-due')
+                );
+            }
+
+            if (e.target.classList.contains('del-hw-btn')) {
+                if(confirm("Вы уверены, что хотите удалить это ДЗ?")) {
+                    const subject = decodeURIComponent(e.target.getAttribute('data-subject'));
+                    const teacher = decodeURIComponent(e.target.getAttribute('data-teacher') || '');
+                    const date = e.target.getAttribute('data-date');
+
+                    try {
+                        const res = await fetch(`/api/homework?user_id=${userId}&group_name=${encodeURIComponent(groupName)}&subject=${encodeURIComponent(subject)}&lesson_date=${encodeURIComponent(date)}&teacher=${encodeURIComponent(teacher)}`, { method: 'DELETE' });
+                        if(res.ok) {
+                            showToast("🗑 ДЗ удалено");
+                            setTimeout(() => loadSchedule(currentDate, currentFocusDate), 150);
+                        } else { alert("Ошибка удаления"); }
+                    } catch(err) { alert("Ошибка сети"); }
+                }
+            }
+        });
+
+        const datePicker = document.getElementById('date-picker');
+        const searchBtn = document.getElementById('search-btn');
+
+        function updateAndLoad(newDate, focusDate = null) {
+            currentDate = newDate;
+            const y = currentDate.getFullYear();
+            const m = String(currentDate.getMonth() + 1).padStart(2, '0');
+            const d = String(currentDate.getDate()).padStart(2, '0');
+            datePicker.value = `${y}-${m}-${d}`;
+            loadSchedule(currentDate, focusDate);
+        }
+
+        function triggerSearch() {
+            if (datePicker.value) {
+                const selectedDate = parseLocalDate(datePicker.value);
+                if (selectedDate.getFullYear() < 2000) { alert("Выберите корректную дату."); return; }
+                updateAndLoad(selectedDate, datePicker.value);
+            }
+        }
+
+        datePicker.addEventListener('change', triggerSearch);
+        datePicker.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); triggerSearch(); datePicker.blur(); }
+        });
+        searchBtn.addEventListener('click', triggerSearch);
+
+        document.getElementById('prev-week').addEventListener('click', () => {
+            const newDate = new Date(currentDate);
+            newDate.setDate(newDate.getDate() - 7);
+            updateAndLoad(newDate, null);
+        });
+
+        document.getElementById('next-week').addEventListener('click', () => {
+            const newDate = new Date(currentDate);
+            newDate.setDate(newDate.getDate() + 7);
+            updateAndLoad(newDate, null);
+        });
+
+        document.getElementById('current-week').addEventListener('click', () => updateAndLoad(new Date(), null));
+
+        async function init() {
+            await checkRole();
+            updateAndLoad(new Date(), null);
+        }
+        init();
+    </script>
+</body>
+</html>
