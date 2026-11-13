@@ -53,3 +53,24 @@ async def set_group(user_id: int, group: str, actor_id: int):
         async with conn.transaction():
             await conn.execute("UPDATE users SET group_name=$1 WHERE user_id=$2", group_val, user_id)
             await audit.log(actor_id, "set_group", user_id, f"group={group_val}")
+
+async def update_user_settings(user_id: int, eng_teacher: str, chin_teacher: str):
+    async with db().acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET eng_teacher=$1, chin_teacher=$2 WHERE user_id=$3",
+            eng_teacher or None, chin_teacher or None, user_id
+        )
+async def get_groups_with_users() -> list[str]:
+    """Возвращает список уникальных групп, у которых есть участники."""
+    rows = await db().fetch(
+        "SELECT DISTINCT group_name FROM users WHERE group_name IS NOT NULL AND group_name != '' ORDER BY group_name"
+    )
+    return [r['group_name'] for r in rows]
+
+async def list_users_by_group(group_name: str) -> list[dict]:
+    """Возвращает список пользователей из конкретной группы."""
+    if group_name == "None": # Специальный маркер для тех, у кого нет группы
+        rows = await db().fetch("SELECT * FROM users WHERE group_name IS NULL OR group_name = '' ORDER BY created_at DESC")
+    else:
+        rows = await db().fetch("SELECT * FROM users WHERE group_name = $1 ORDER BY created_at DESC", group_name)
+    return [dict(r) for r in rows]

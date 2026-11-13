@@ -22,6 +22,16 @@ async def read_index():
     return FileResponse("webapp/static/index.html")
 
 
+class UserSettings (BaseModel):
+    eng_teacher: str
+    ch_teacher: str
+
+@app.put("/api/user/{user_id}/settings")
+async def save_settings(user_id: int, settings: UserSettings):
+    await user_service.update_user_settings(user_id, settings.eng_teacher, settings.chin_teacher)
+    return {"status": "ok"}
+
+
 class HomeworkCreate(BaseModel):
     user_id: int
     group_name: str
@@ -76,7 +86,9 @@ async def delete_homework_api(user_id: int, group_name: str, subject: str, lesso
 
 
 @app.get("/api/schedule/{group_name}")
-async def get_schedule_api(group_name: str, start: str = None, end: str = None):
+async def get_schedule_api(group_name: str, user_id: int = None, start: str = None, end: str = None):
+    # ^^^^^^^ ВОТ ЭТОГО ПАРАМЕТРА НЕ ХВАТАЛО
+
     if not start:
         today = date.today()
         start_date = today - timedelta(days=today.weekday())
@@ -89,6 +101,32 @@ async def get_schedule_api(group_name: str, start: str = None, end: str = None):
     try:
         schedule = await fetch_schedule_from_ruz(group_name, start, end)
         hws = await hw_service.list_homework(group_name)
+
+        # ФИЛЬТРАЦИЯ ПО НАСТРОЙКАМ ПОЛЬЗОВАТЕЛЯ
+        if user_id:
+            user = await user_service.get_user(user_id)
+            if user:
+                eng_t = user.get("eng_teacher")
+                chin_t = user.get("chin_teacher")
+
+                filtered_schedule = []
+                for les in schedule:
+                    subj = les['subject'].lower()
+                    teacher = les.get('teacher', '')
+
+                    # Фильтр английского
+                    if ('иностранный' in subj or 'английский' in subj) and eng_t:
+                        if eng_t.lower() not in teacher.lower():
+                            continue
+
+                    # Фильтр китайского
+                    if 'китайский' in subj and chin_t:
+                        if chin_t.lower() not in teacher.lower():
+                            continue
+
+                    filtered_schedule.append(les)
+                schedule = filtered_schedule
+
         return {"schedule": schedule, "homeworks": hws}
     except Exception as e:
         import traceback

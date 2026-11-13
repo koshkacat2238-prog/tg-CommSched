@@ -45,7 +45,29 @@
         <button id="next-week">Вперед ➡️</button>
     </div>
 
+    <div class="nav-buttons">
+        <button id="open-settings-btn" style="background: #555;">⚙️ Настройки расписания</button>
+    </div>
+
     <div id="schedule-container">Загрузка...</div>
+
+        <dialog id="settings-modal">
+        <h3 style="margin-top: 0;">Мои преподаватели</h3>
+        <p style="font-size: 12px; color: #aaa;">Выберите своих преподавателей, чтобы видеть только свои пары.</p>
+
+        <label style="font-size: 12px; color: #aaa;">Английский язык:</label>
+        <select id="set-eng-teacher" style="width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 6px; background: #232e3c; color: white; border: 1px solid #444;">
+            <option value="">-- Показывать всех --</option>
+        </select>
+
+        <label style="font-size: 12px; color: #aaa;">Китайский язык:</label>
+        <select id="set-chin-teacher" style="width: 100%; margin-bottom: 15px; padding: 8px; border-radius: 6px; background: #232e3c; color: white; border: 1px solid #444;">
+            <option value="">-- Показывать всех --</option>
+        </select>
+
+        <button id="save-settings-btn" style="background: #2e7d32;">Сохранить</button>
+        <button id="close-settings-btn" style="background: #555;">Отмена</button>
+    </dialog>
 
     <dialog id="hw-modal">
         <h3 style="margin-top: 0;" id="hw-modal-title">Добавить ДЗ</h3>
@@ -188,9 +210,11 @@
             const endStr = formatDateForApi(sunday);
 
             try {
-                const response = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?start=${startStr}&end=${endStr}`);
+                const response = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?user_id=${userId}&start=${startStr}&end=${endStr}`);
                 if (!response.ok) throw new Error('Ошибка сети');
 
+                const settingsModal = document.getElementById('settings-modal');
+                let rawScheduleData = [];
                 const data = await response.json();
                 const schedule = data.schedule || [];
                 const homeworks = data.homeworks || [];
@@ -274,6 +298,66 @@
                     decodeURIComponent(e.target.getAttribute('data-teacher') || '')
                 );
             }
+        document.getElementById('open-settings-btn').addEventListener('click', async () => {
+            // Запрашиваем расписание БЕЗ фильтрации, чтобы получить ВСЕХ преподавателей
+            const monday = getMonday(currentDate);
+            const sunday = new Date(monday);
+            sunday.setDate(monday.getDate() + 6);
+            const startStr = formatDateForApi(monday);
+            const endStr = formatDateForApi(sunday);
+
+            try {
+                const res = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?start=${startStr}&end=${endStr}`);
+                const data = await res.json();
+                const allLessons = data.schedule || [];
+
+                const engTeachers = new Set();
+                const chinTeachers = new Set();
+
+                allLessons.forEach(les => {
+                    const subj = les.subject.toLowerCase();
+                    if ((subj.includes('иностранный') || subj.includes('английский')) && les.teacher) {
+                        engTeachers.add(les.teacher);
+                    }
+                    if (subj.includes('китайский') && les.teacher) {
+                        chinTeachers.add(les.teacher);
+                    }
+                });
+
+                const engSelect = document.getElementById('set-eng-teacher');
+                const chinSelect = document.getElementById('set-chin-teacher');
+
+                // Очищаем старые опции (кроме первой)
+                engSelect.innerHTML = '<option value="">-- Показывать всех --</option>';
+                chinSelect.innerHTML = '<option value="">-- Показывать всех --</option>';
+
+                engTeachers.forEach(t => engSelect.innerHTML += `<option value="${t}">${t}</option>`);
+                chinTeachers.forEach(t => chinSelect.innerHTML += `<option value="${t}">${t}</option>`);
+
+                settingsModal.showModal();
+            } catch (e) { alert("Не удалось загрузить список преподавателей"); }
+        });
+
+        document.getElementById('close-settings-btn').addEventListener('click', () => settingsModal.close());
+
+        document.getElementById('save-settings-btn').addEventListener('click', async () => {
+            const eng = document.getElementById('set-eng-teacher').value;
+            const chin = document.getElementById('set-chin-teacher').value;
+
+            try {
+                const res = await fetch(`/api/user/${userId}/settings`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ eng_teacher: eng, chin_teacher: chin })
+                });
+
+                if (res.ok) {
+                    settingsModal.close();
+                    showToast("✅ Настройки сохранены");
+                    loadSchedule(currentDate, currentFocusDate); // Перезагружаем с фильтром
+                }
+            } catch (e) { alert("Ошибка сохранения"); }
+        });
 
             if (e.target.classList.contains('edit-hw-btn')) {
                 openHwModal(
