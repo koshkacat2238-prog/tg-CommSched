@@ -21,13 +21,14 @@
         .type { color: #64b5f6; font-size: 12px; }
         .teacher { color: #81c784; font-size: 13px; }
         .room { color: #ffb74d; font-size: 13px; }
-        .hw { background: rgba(255, 193, 7, 0.1); color: #ffd54f; border-radius: 4px; padding: 2px 6px; font-size: 12px; display: inline-block; margin-bottom: 4px;}
+        .hw { background: rgba(255, 193, 7, 0.1); color: #ffd54f; border-radius: 4px; padding: 2px 6px; font-size: 12px; display: inline-block;}
         .empty-msg { text-align: center; margin-top: 30px; color: #7f91a4; }
 
         dialog { border: none; border-radius: 12px; background: var(--tg-theme-bg-color, #17212b); color: var(--tg-theme-text-color, #f5f5f5); padding: 20px; width: 90%; max-width: 400px; box-sizing: border-box; }
         dialog::backdrop { background: rgba(0,0,0,0.5); }
-        dialog textarea, dialog input { width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: var(--tg-theme-secondary-bg-color, #232e3c); color: white; box-sizing: border-box;}
+        dialog textarea, dialog input, dialog select { width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: var(--tg-theme-secondary-bg-color, #232e3c); color: white; box-sizing: border-box;}
         dialog button { width: 100%; margin-top: 5px; }
+
         .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: white; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 1000; }
     </style>
 </head>
@@ -51,24 +52,7 @@
 
     <div id="schedule-container">Загрузка...</div>
 
-        <dialog id="settings-modal">
-        <h3 style="margin-top: 0;">Мои преподаватели</h3>
-        <p style="font-size: 12px; color: #aaa;">Выберите своих преподавателей, чтобы видеть только свои пары.</p>
-
-        <label style="font-size: 12px; color: #aaa;">Английский язык:</label>
-        <select id="set-eng-teacher" style="width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 6px; background: #232e3c; color: white; border: 1px solid #444;">
-            <option value="">-- Показывать всех --</option>
-        </select>
-
-        <label style="font-size: 12px; color: #aaa;">Китайский язык:</label>
-        <select id="set-chin-teacher" style="width: 100%; margin-bottom: 15px; padding: 8px; border-radius: 6px; background: #232e3c; color: white; border: 1px solid #444;">
-            <option value="">-- Показывать всех --</option>
-        </select>
-
-        <button id="save-settings-btn" style="background: #2e7d32;">Сохранить</button>
-        <button id="close-settings-btn" style="background: #555;">Отмена</button>
-    </dialog>
-
+    <!-- Модальное окно ДЗ -->
     <dialog id="hw-modal">
         <h3 style="margin-top: 0;" id="hw-modal-title">Добавить ДЗ</h3>
         <div style="margin-bottom: 10px; font-weight: bold; color: #64b5f6;" id="hw-lesson-info"></div>
@@ -79,7 +63,26 @@
         <button id="close-hw-btn" style="background: #555;">Отмена</button>
     </dialog>
 
-    <div id="toast" class="toast">ДЗ добавлено!</div>
+    <!-- Модальное окно Настроек -->
+    <dialog id="settings-modal">
+        <h3 style="margin-top: 0;">Мои преподаватели</h3>
+        <p style="font-size: 12px; color: #aaa;">Выберите своих преподавателей, чтобы видеть только свои пары.</p>
+
+        <label style="font-size: 12px; color: #aaa;">Английский язык:</label>
+        <select id="set-eng-teacher">
+            <option value="">-- Показывать всех --</option>
+        </select>
+
+        <label style="font-size: 12px; color: #aaa;">Китайский язык:</label>
+        <select id="set-chin-teacher">
+            <option value="">-- Показывать всех --</option>
+        </select>
+
+        <button id="save-settings-btn" style="background: #2e7d32;">Сохранить</button>
+        <button id="close-settings-btn" style="background: #555;">Отмена</button>
+    </dialog>
+
+    <div id="toast" class="toast">Готово!</div>
 
     <script>
         const tg = window.Telegram.WebApp;
@@ -94,12 +97,21 @@
         let currentDate = new Date();
         let currentFocusDate = null;
         let isTeacher = false;
+        let availableTeachers = { eng: [], chin: [] };
+        let userSettings = { eng_teacher: "", chin_teacher: "" };
 
+        // Переменные для ДЗ
         let hwModalSubject = "";
         let hwModalTeacher = "";
         let hwModalDate = "";
         let isEditing = false;
 
+        // DOM элементы
+        const hwModal = document.getElementById('hw-modal');
+        const settingsModal = document.getElementById('settings-modal');
+        const datePicker = document.getElementById('date-picker');
+
+        // --- УТИЛИТЫ ---
         async function checkRole() {
             if (!userId) return;
             try {
@@ -115,59 +127,6 @@
             toast.style.opacity = '1';
             setTimeout(() => { toast.style.opacity = '0'; }, 2500);
         }
-
-        const hwModal = document.getElementById('hw-modal');
-
-        function openHwModal(subject, date, teacher, desc = "", due = "") {
-            hwModalSubject = subject;
-            hwModalTeacher = teacher;
-            hwModalDate = date;
-
-            document.getElementById('hw-lesson-info').innerText = `${subject} — ${formatDate(date)}`;
-            document.getElementById('hw-desc').value = desc;
-
-            if (due) {
-                document.getElementById('hw-due').value = due;
-                isEditing = true;
-                document.getElementById('hw-modal-title').innerText = "Редактировать ДЗ";
-            } else {
-                const d = new Date(date);
-                d.setDate(d.getDate() + 7);
-                document.getElementById('hw-due').value = d.toISOString().split('T')[0];
-                isEditing = false;
-                document.getElementById('hw-modal-title').innerText = "Новое ДЗ";
-            }
-            hwModal.showModal();
-        }
-
-        document.getElementById('close-hw-btn').addEventListener('click', () => hwModal.close());
-
-        document.getElementById('save-hw-btn').addEventListener('click', async () => {
-            const description = document.getElementById('hw-desc').value.trim();
-            const due = document.getElementById('hw-due').value;
-
-            if (!description || !due) {
-                alert("Заполните описание и дедлайн!");
-                return;
-            }
-
-            const payload = { user_id: userId, group_name: groupName, subject: hwModalSubject, description: description, lesson_date: hwModalDate, teacher: hwModalTeacher, due_date: due };
-            const method = isEditing ? 'PUT' : 'POST';
-
-            try {
-                const res = await fetch('/api/homework', {
-                    method: method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
-                });
-
-                if (res.ok) {
-                    hwModal.close();
-                    showToast(isEditing ? "✏️ ДЗ обновлено!" : "✅ ДЗ добавлено!");
-                    setTimeout(() => loadSchedule(currentDate, currentFocusDate), 150);
-                } else {
-                    alert("Ошибка: " + (await res.json()).detail);
-                }
-            } catch (e) { alert("Ошибка сети"); }
-        });
 
         function parseLocalDate(dateStr) {
             if (!dateStr) return new Date();
@@ -197,6 +156,90 @@
             return `${y}.${m}.${d}`;
         }
 
+        // --- НАСТРОЙКИ (ПРЕПОДАВАТЕЛИ) ---
+                document.getElementById('open-settings-btn').addEventListener('click', () => {
+            const engSelect = document.getElementById('set-eng-teacher');
+            const chinSelect = document.getElementById('set-chin-teacher');
+
+            engSelect.innerHTML = '<option value="">-- Показывать всех --</option>';
+            chinSelect.innerHTML = '<option value="">-- Показывать всех --</option>';
+
+            availableTeachers.eng.forEach(t => engSelect.innerHTML += `<option value="${t}">${t}</option>`);
+            availableTeachers.chin.forEach(t => chinSelect.innerHTML += `<option value="${t}">${t}</option>`);
+
+            settingsModal.showModal();
+        });
+        document.getElementById('close-settings-btn').addEventListener('click', () => settingsModal.close());
+
+        document.getElementById('save-settings-btn').addEventListener('click', async () => {
+            const eng = document.getElementById('set-eng-teacher').value;
+            const chin = document.getElementById('set-chin-teacher').value;
+
+            try {
+                const res = await fetch(`/api/user/${userId}/settings`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ eng_teacher: eng, chin_teacher: chin })
+                });
+
+                if (res.ok) {
+                    settingsModal.close();
+                    showToast("✅ Настройки сохранены");
+                    loadSchedule(currentDate, currentFocusDate);
+                }
+            } catch (e) { alert("Ошибка сохранения"); }
+        });
+
+        // --- ДОБАВЛЕНИЕ/РЕДАКТИРОВАНИЕ ДЗ ---
+        function openHwModal(subject, date, teacher, desc = "", due = "") {
+            hwModalSubject = subject;
+            hwModalTeacher = teacher;
+            hwModalDate = date;
+
+            document.getElementById('hw-lesson-info').innerText = `${subject} — ${formatDate(date)}`;
+            document.getElementById('hw-desc').value = desc;
+
+            if (due) {
+                document.getElementById('hw-due').value = due;
+                isEditing = true;
+                document.getElementById('hw-modal-title').innerText = "Редактировать ДЗ";
+            } else {
+                const d = new Date(date);
+                d.setDate(d.getDate() + 7);
+                document.getElementById('hw-due').value = d.toISOString().split('T')[0];
+                isEditing = false;
+                document.getElementById('hw-modal-title').innerText = "Новое ДЗ";
+            }
+            hwModal.showModal();
+        }
+
+        document.getElementById('close-hw-btn').addEventListener('click', () => hwModal.close());
+
+        document.getElementById('save-hw-btn').addEventListener('click', async () => {
+            const description = document.getElementById('hw-desc').value.trim();
+            const due = document.getElementById('hw-due').value;
+
+            if (!description || !due) { alert("Заполните описание и дедлайн!"); return; }
+
+            const payload = { user_id: userId, group_name: groupName, subject: hwModalSubject, description: description, lesson_date: hwModalDate, teacher: hwModalTeacher, due_date: due };
+            const method = isEditing ? 'PUT' : 'POST';
+
+            try {
+                const res = await fetch('/api/homework', {
+                    method: method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    hwModal.close();
+                    showToast(isEditing ? "✏️ ДЗ обновлено!" : "✅ ДЗ добавлено!");
+                    setTimeout(() => loadSchedule(currentDate, currentFocusDate), 150);
+                } else {
+                    alert("Ошибка: " + (await res.json()).detail);
+                }
+            } catch (e) { alert("Ошибка сети"); }
+        });
+
+        // --- ЗАГРУЗКА РАСПИСАНИЯ ---
         async function loadSchedule(baseDate, focusDate = null) {
             const container = document.getElementById('schedule-container');
             container.innerHTML = 'Загрузка...';
@@ -210,14 +253,14 @@
             const endStr = formatDateForApi(sunday);
 
             try {
+                // Передаем user_id для фильтрации!
                 const response = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?user_id=${userId}&start=${startStr}&end=${endStr}`);
                 if (!response.ok) throw new Error('Ошибка сети');
 
-                const settingsModal = document.getElementById('settings-modal');
-                let rawScheduleData = [];
                 const data = await response.json();
                 const schedule = data.schedule || [];
                 const homeworks = data.homeworks || [];
+                availableTeachers = data.available_teachers || { eng: [], chin: [] };
 
                 if (schedule.length === 0) {
                     container.innerHTML = '<div class="empty-msg">На эту неделю занятий нет. 🎉</div>';
@@ -241,12 +284,7 @@
                     html += '<table><tr><th>Время</th><th>Занятие</th><th>ДЗ</th></tr>';
 
                     grouped[date].forEach(les => {
-                        // Ищем ДЗ строго по дате, предмету и преподавателю
-                        const hw = homeworks.find(h =>
-                            h.lesson_date === les.date &&
-                            h.subject === les.subject &&
-                            (h.teacher || '') === (les.teacher || '')
-                        );
+                        const hw = homeworks.find(h => h.lesson_date === les.date && h.subject === les.subject && (h.teacher || '') === (les.teacher || ''));
 
                         let hwText = '—';
                         if (hw) {
@@ -255,7 +293,6 @@
                                 const safeSub = encodeURIComponent(les.subject);
                                 const safeTeach = encodeURIComponent(les.teacher || '');
                                 const safeDesc = encodeURIComponent(hw.description);
-
                                 hwText += `<br><button class="edit-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" data-desc="${safeDesc}" data-due="${hw.due_date}" style="background: transparent; color: #64b5f6; border: none; padding: 0 5px; cursor: pointer; font-size: 16px; flex: none; box-shadow: none;" title="Редактировать">✏️</button>`;
                                 hwText += `<button class="del-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" style="background: transparent; color: #ff5252; border: none; padding: 0 5px; cursor: pointer; font-size: 16px; flex: none; box-shadow: none;" title="Удалить">🗑</button>`;
                             }
@@ -290,104 +327,26 @@
             }
         }
 
+        // --- ОБРАБОТЧИКИ СОБЫТИЙ (КЛИКИ) ---
         document.getElementById('schedule-container').addEventListener('click', async (e) => {
             if (e.target.classList.contains('add-hw-btn')) {
-                openHwModal(
-                    decodeURIComponent(e.target.getAttribute('data-subject')),
-                    e.target.getAttribute('data-date'),
-                    decodeURIComponent(e.target.getAttribute('data-teacher') || '')
-                );
+                openHwModal(decodeURIComponent(e.target.getAttribute('data-subject')), e.target.getAttribute('data-date'), decodeURIComponent(e.target.getAttribute('data-teacher') || ''));
             }
-        document.getElementById('open-settings-btn').addEventListener('click', async () => {
-            // Запрашиваем расписание БЕЗ фильтрации, чтобы получить ВСЕХ преподавателей
-            const monday = getMonday(currentDate);
-            const sunday = new Date(monday);
-            sunday.setDate(monday.getDate() + 6);
-            const startStr = formatDateForApi(monday);
-            const endStr = formatDateForApi(sunday);
-
-            try {
-                const res = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?start=${startStr}&end=${endStr}`);
-                const data = await res.json();
-                const allLessons = data.schedule || [];
-
-                const engTeachers = new Set();
-                const chinTeachers = new Set();
-
-                allLessons.forEach(les => {
-                    const subj = les.subject.toLowerCase();
-                    if ((subj.includes('иностранный') || subj.includes('английский')) && les.teacher) {
-                        engTeachers.add(les.teacher);
-                    }
-                    if (subj.includes('китайский') && les.teacher) {
-                        chinTeachers.add(les.teacher);
-                    }
-                });
-
-                const engSelect = document.getElementById('set-eng-teacher');
-                const chinSelect = document.getElementById('set-chin-teacher');
-
-                // Очищаем старые опции (кроме первой)
-                engSelect.innerHTML = '<option value="">-- Показывать всех --</option>';
-                chinSelect.innerHTML = '<option value="">-- Показывать всех --</option>';
-
-                engTeachers.forEach(t => engSelect.innerHTML += `<option value="${t}">${t}</option>`);
-                chinTeachers.forEach(t => chinSelect.innerHTML += `<option value="${t}">${t}</option>`);
-
-                settingsModal.showModal();
-            } catch (e) { alert("Не удалось загрузить список преподавателей"); }
-        });
-
-        document.getElementById('close-settings-btn').addEventListener('click', () => settingsModal.close());
-
-        document.getElementById('save-settings-btn').addEventListener('click', async () => {
-            const eng = document.getElementById('set-eng-teacher').value;
-            const chin = document.getElementById('set-chin-teacher').value;
-
-            try {
-                const res = await fetch(`/api/user/${userId}/settings`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ eng_teacher: eng, chin_teacher: chin })
-                });
-
-                if (res.ok) {
-                    settingsModal.close();
-                    showToast("✅ Настройки сохранены");
-                    loadSchedule(currentDate, currentFocusDate); // Перезагружаем с фильтром
-                }
-            } catch (e) { alert("Ошибка сохранения"); }
-        });
-
             if (e.target.classList.contains('edit-hw-btn')) {
-                openHwModal(
-                    decodeURIComponent(e.target.getAttribute('data-subject')),
-                    e.target.getAttribute('data-date'),
-                    decodeURIComponent(e.target.getAttribute('data-teacher') || ''),
-                    decodeURIComponent(e.target.getAttribute('data-desc')),
-                    e.target.getAttribute('data-due')
-                );
+                openHwModal(decodeURIComponent(e.target.getAttribute('data-subject')), e.target.getAttribute('data-date'), decodeURIComponent(e.target.getAttribute('data-teacher') || ''), decodeURIComponent(e.target.getAttribute('data-desc')), e.target.getAttribute('data-due'));
             }
-
             if (e.target.classList.contains('del-hw-btn')) {
-                if(confirm("Вы уверены, что хотите удалить это ДЗ?")) {
+                if(confirm("Удалить это ДЗ?")) {
                     const subject = decodeURIComponent(e.target.getAttribute('data-subject'));
                     const teacher = decodeURIComponent(e.target.getAttribute('data-teacher') || '');
                     const date = e.target.getAttribute('data-date');
-
                     try {
                         const res = await fetch(`/api/homework?user_id=${userId}&group_name=${encodeURIComponent(groupName)}&subject=${encodeURIComponent(subject)}&lesson_date=${encodeURIComponent(date)}&teacher=${encodeURIComponent(teacher)}`, { method: 'DELETE' });
-                        if(res.ok) {
-                            showToast("🗑 ДЗ удалено");
-                            setTimeout(() => loadSchedule(currentDate, currentFocusDate), 150);
-                        } else { alert("Ошибка удаления"); }
+                        if(res.ok) { showToast("🗑 ДЗ удалено"); setTimeout(() => loadSchedule(currentDate, currentFocusDate), 150); }
                     } catch(err) { alert("Ошибка сети"); }
                 }
             }
         });
-
-        const datePicker = document.getElementById('date-picker');
-        const searchBtn = document.getElementById('search-btn');
 
         function updateAndLoad(newDate, focusDate = null) {
             currentDate = newDate;
@@ -407,25 +366,22 @@
         }
 
         datePicker.addEventListener('change', triggerSearch);
-        datePicker.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); triggerSearch(); datePicker.blur(); }
-        });
-        searchBtn.addEventListener('click', triggerSearch);
+        datePicker.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); triggerSearch(); datePicker.blur(); } });
+        document.getElementById('search-btn').addEventListener('click', triggerSearch);
 
         document.getElementById('prev-week').addEventListener('click', () => {
             const newDate = new Date(currentDate);
             newDate.setDate(newDate.getDate() - 7);
             updateAndLoad(newDate, null);
         });
-
         document.getElementById('next-week').addEventListener('click', () => {
             const newDate = new Date(currentDate);
             newDate.setDate(newDate.getDate() + 7);
             updateAndLoad(newDate, null);
         });
-
         document.getElementById('current-week').addEventListener('click', () => updateAndLoad(new Date(), null));
 
+        // --- СТАРТ ---
         async function init() {
             await checkRole();
             updateAndLoad(new Date(), null);

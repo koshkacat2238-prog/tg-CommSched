@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from datetime import date, timedelta
+from typing import Optional
 
 from services.parser import fetch_schedule_from_ruz
 from services import homework as hw_service, users as user_service
@@ -22,16 +23,6 @@ async def read_index():
     return FileResponse("webapp/static/index.html")
 
 
-class UserSettings (BaseModel):
-    eng_teacher: str
-    ch_teacher: str
-
-@app.put("/api/user/{user_id}/settings")
-async def save_settings(user_id: int, settings: UserSettings):
-    await user_service.update_user_settings(user_id, settings.eng_teacher, settings.chin_teacher)
-    return {"status": "ok"}
-
-
 class HomeworkCreate(BaseModel):
     user_id: int
     group_name: str
@@ -42,11 +33,23 @@ class HomeworkCreate(BaseModel):
     due_date: str
 
 
+# Модель для настроек (сделали поля необязательными)
+class UserSettings(BaseModel):
+    eng_teacher: Optional[str] = None
+    chin_teacher: Optional[str] = None
+
+
 @app.get("/api/role/{user_id}")
 async def get_user_role(user_id: int):
     user = await user_service.get_user(user_id)
     if not user: return {"role": "student"}
     return {"role": user["role"]}
+
+
+@app.put("/api/user/{user_id}/settings")
+async def save_settings(user_id: int, settings: UserSettings):
+    await user_service.update_user_settings(user_id, settings.eng_teacher or "", settings.chin_teacher or "")
+    return {"status": "ok"}
 
 
 @app.post("/api/homework")
@@ -87,8 +90,6 @@ async def delete_homework_api(user_id: int, group_name: str, subject: str, lesso
 
 @app.get("/api/schedule/{group_name}")
 async def get_schedule_api(group_name: str, user_id: int = None, start: str = None, end: str = None):
-    # ^^^^^^^ ВОТ ЭТОГО ПАРАМЕТРА НЕ ХВАТАЛО
-
     if not start:
         today = date.today()
         start_date = today - timedelta(days=today.weekday())
@@ -99,35 +100,48 @@ async def get_schedule_api(group_name: str, user_id: int = None, start: str = No
         end = end_date.strftime("%Y.%m.%d")
 
     try:
-        schedule = await fetch_schedule_from_ruz(group_name, start, end)
+        raw_schedule = await fetch_schedule_from_ruz(group_name, start, end)
         hws = await hw_service.list_homework(group_name)
 
-        # ФИЛЬТРАЦИЯ ПО НАСТРОЙКАМ ПОЛЬЗОВАТЕЛЯ
+        # Собираем уникальных преподавателей
+        eng_teachers = set()
+        chin_teachers = set()
+        for les in raw_schedule:
+            subj = les['subject'].lower()
+            teacher = les.get('teacher', '')
+            if teacher:
+                if 'иностранный' in subj or 'английский' in subj: eng_teachers.add(teacher)
+                if 'китайский' in subj: chin_teachers.add(teacher)
+
+        # Фильтрация
+        filtered_schedule = raw_schedule
+        current_settings = {"eng_teacher": None, "chin_teacher": None}
+
         if user_id:
             user = await user_service.get_user(user_id)
             if user:
                 eng_t = user.get("eng_teacher")
                 chin_t = user.get("chin_teacher")
+                current_settings["eng_teacher"] = eng_t
+                current_settings["chin_teacher"] = chin_t
 
                 filtered_schedule = []
-                for les in schedule:
+                for les in raw_schedule:
                     subj = les['subject'].lower()
                     teacher = les.get('teacher', '')
 
-                    # Фильтр английского
                     if ('иностранный' in subj or 'английский' in subj) and eng_t:
-                        if eng_t.lower() not in teacher.lower():
-                            continue
-
-                    # Фильтр китайского
+                        if eng_t.lower() not in teacher.lower(): continue
                     if 'китайский' in subj and chin_t:
-                        if chin_t.lower() not in teacher.lower():
-                            continue
-
+                        if chin_t.lower() not in teacher.lower(): continue
                     filtered_schedule.append(les)
-                schedule = filtered_schedule
 
-        return {"schedule": schedule, "homeworks": hws}
+        return {
+            "schedule": filtered_schedule,
+            "homeworks": hws,
+            "available_teachers": {"eng": list(eng_teachers), "chin": list(chin_teachers)},
+            "current_settings": current_settings
+        }
     except Exception as e:
         import traceback
         traceback.print_exc()

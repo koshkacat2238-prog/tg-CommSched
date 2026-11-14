@@ -2,18 +2,22 @@ import httpx
 
 BASE_URL = "https://ruz.fa.ru/api"
 
+# Добавляем заголовки, чтобы сайт вуза не думал, что мы бот
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 async def get_group_id(group_name: str) -> int | None:
     url = f"{BASE_URL}/search"
     params = {"term": group_name, "type": "group"}
-    async with httpx.AsyncClient() as client:
+    # Увеличиваем таймаут до 15 секунд
+    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
         response = await client.get(url, params=params)
         if response.status_code == 200:
             data = response.json()
             if data and len(data) > 0:
                 return data[0]["id"]
     return None
-
 
 async def fetch_schedule_from_ruz(group_name: str, start_date: str, end_date: str) -> list[dict]:
     group_id = await get_group_id(group_name)
@@ -23,11 +27,10 @@ async def fetch_schedule_from_ruz(group_name: str, start_date: str, end_date: st
     url = f"{BASE_URL}/schedule/group/{group_id}"
     params = {"start": start_date, "finish": end_date, "lng": 1}
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
         response = await client.get(url, params=params)
         if response.status_code == 200:
             raw_data = response.json()
-            # Очищаем данные, оставляя только нужные поля
             clean_data = []
             for item in raw_data:
                 clean_data.append({
