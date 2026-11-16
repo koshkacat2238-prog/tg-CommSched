@@ -2,84 +2,123 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Расписание</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 10px; background: var(--tg-theme-bg-color, #17212b); color: var(--tg-theme-text-color, #f5f5f5); }
-        .controls { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
-        input[type="date"] { background: var(--tg-theme-secondary-bg-color, #232e3c); color: var(--tg-theme-text-color, #f5f5f5); border: 1px solid rgba(255,255,255,0.1); padding: 8px; border-radius: 8px; font-size: 14px; flex-grow: 1; }
-        .nav-buttons { display: flex; gap: 10px; margin-bottom: 15px; }
-        button { background: var(--tg-theme-button-color, #2b5278); color: var(--tg-theme-button-text-color, #fff); border: none; padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; flex: 1; }
-        button:active { opacity: 0.8; }
-        #search-btn { background: #2e7d32; flex: 0 0 auto; }
+        :root {
+            --bg: var(--tg-theme-bg-color, #17212b);
+            --text: var(--tg-theme-text-color, #f5f5f5);
+            --hint: var(--tg-theme-hint-color, #7f91a4);
+            --btn: var(--tg-theme-button-color, #2b5278);
+            --btn-text: var(--tg-theme-button-text-color, #fff);
+            --card: var(--tg-theme-secondary-bg-color, #232e3c);
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 10px; background: var(--bg); color: var(--text); margin: 0; }
+
+        /* --- ВЕРХНЯЯ ПАНЕЛЬ --- */
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        h3 { margin: 0; font-size: 18px; }
+        .btn-icon { background: var(--card); color: var(--text); border: none; border-radius: 10px; width: 40px; height: 40px; font-size: 18px; display: flex; justify-content: center; align-items: center; cursor: pointer; flex-shrink: 0; }
+        .btn-icon:active { opacity: 0.7; }
+        .hidden { display: none !important; }
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; }
+        input[type="date"] { background: var(--card); color: var(--text); border: none; padding: 10px; border-radius: 10px; font-size: 14px; flex-grow: 1; font-family: inherit; outline: none; }
+
+        .nav-buttons { display: flex; gap: 10px; margin-bottom: 15px; justify-content: center; }
+        .nav-buttons button { flex: 1; height: 40px; }
+
+        /* --- ВКЛАДКИ ДНЕЙ --- */
+        .day-tabs { display: flex; gap: 5px; overflow-x: auto; margin-bottom: 15px; padding-bottom: 5px; scrollbar-width: none; }
+        .day-tabs::-webkit-scrollbar { display: none; }
+        .day-tab { background: var(--card); color: var(--text); padding: 8px 12px; border-radius: 10px; font-size: 13px; cursor: pointer; white-space: nowrap; flex-shrink: 0; text-align: center; min-width: 40px; }
+        .day-tab.active { background: var(--btn); color: var(--btn-text); font-weight: bold; }
+        .day-tab.all-btn { background: transparent; border: 1px solid var(--btn); color: var(--btn); }
+
+        /* --- ТАБЛИЦА РАСПИСАНИЯ --- */
         .date-header { margin-top: 20px; margin-bottom: 10px; font-size: 16px; font-weight: bold; color: #64b5f6; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th, td { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 10px 5px; text-align: left; vertical-align: top; }
-        th { background: rgba(255,255,255,0.05); font-weight: bold; color: var(--tg-theme-hint-color, #7f91a4); }
+        th, td { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 5px; text-align: left; vertical-align: top; }
+        th { background: rgba(255,255,255,0.05); font-weight: bold; color: var(--hint); font-size: 13px; }
         .time { font-weight: bold; white-space: nowrap; }
         .type { color: #64b5f6; font-size: 12px; }
         .teacher { color: #81c784; font-size: 13px; }
         .room { color: #ffb74d; font-size: 13px; }
-        .hw { background: rgba(255, 193, 7, 0.1); color: #ffd54f; border-radius: 4px; padding: 2px 6px; font-size: 12px; display: inline-block;}
-        .empty-msg { text-align: center; margin-top: 30px; color: #7f91a4; }
+        .hw { background: rgba(255, 193, 7, 0.1); color: #ffd54f; border-radius: 4px; padding: 4px 8px; font-size: 12px; display: inline-block;}
+        .empty-msg { text-align: center; margin-top: 30px; color: var(--hint); }
 
-        dialog { border: none; border-radius: 12px; background: var(--tg-theme-bg-color, #17212b); color: var(--tg-theme-text-color, #f5f5f5); padding: 20px; width: 90%; max-width: 400px; box-sizing: border-box; }
-        dialog::backdrop { background: rgba(0,0,0,0.5); }
-        dialog textarea, dialog input, dialog select { width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: var(--tg-theme-secondary-bg-color, #232e3c); color: white; box-sizing: border-box;}
-        dialog button { width: 100%; margin-top: 5px; }
+        /* --- МОДАЛЬНЫЕ ОКНА --- */
+        dialog { border: none; border-radius: 16px; background: var(--bg); color: var(--text); padding: 20px; width: 90%; max-width: 400px; box-sizing: border-box; }
+        dialog::backdrop { background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); }
+        dialog h3 { margin-bottom: 15px; }
+        dialog textarea, dialog input, dialog select { width: 100%; margin-bottom: 10px; padding: 12px; border-radius: 10px; border: none; background: var(--card); color: var(--text); box-sizing: border-box; font-family: inherit; font-size: 14px; outline: none; }
+        dialog button { width: 100%; padding: 12px; margin-top: 5px; border-radius: 10px; font-size: 15px; font-weight: bold; }
+        .skeleton-row { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        .skeleton-block { background: rgba(255,255,255,0.05); border-radius: 8px; animation: pulse 1.5s infinite ease-in-out; }
+        .skeleton-time { width: 50px; height: 40px; }
+        .skeleton-content { flex-grow: 1; height: 60px; }
+        @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
 
-        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: white; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 1000; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: white; padding: 12px 24px; border-radius: 10px; font-size: 14px; font-weight: bold; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
     </style>
 </head>
 <body>
-    <h3 id="title">Загрузка...</h3>
+    <!-- Header -->
+    <div class="header-row">
+        <h3 id="title">Группа...</h3>
+        <button id="open-settings-btn" class="btn-icon" title="Настройки">⚙️</button>
+    </div>
 
+    <!-- Date & Search -->
     <div class="controls">
         <input type="date" id="date-picker">
-        <button id="search-btn">🔍 Найти</button>
+        <button id="search-btn" class="btn-icon" style="background: #2e7d32; color: white;">🔍</button>
     </div>
 
+    <!-- Week Navigation -->
     <div class="nav-buttons">
-        <button id="prev-week">⬅️ Назад</button>
-        <button id="current-week">Текущая</button>
-        <button id="next-week">Вперед ➡️</button>
+        <button id="prev-week" class="btn-icon">⬅️</button>
+        <button id="current-week" class="btn-icon" style="display: none;">📅</button>
+        <button id="next-week" class="btn-icon">➡️</button>
     </div>
 
-    <div class="nav-buttons">
-        <button id="open-settings-btn" style="background: #555;">⚙️ Настройки расписания</button>
+    <!-- Day Tabs -->
+    <div class="day-tabs" id="day-tabs-container">
+        <!-- Заполняется через JS -->
     </div>
-
+    <div id="no-settings-warning" class="hidden" style="background: rgba(255, 193, 7, 0.1); border: 1px solid #ffb74d; color: #ffd54f; padding: 10px; border-radius: 10px; font-size: 13px; margin-bottom: 15px; text-align: center;">
+        ⚠️ Вы видите пары всех преподавателей. Нажмите <b>⚙️</b> наверху, чтобы выбрать своих и скрыть лишнее.
+    </div>
     <div id="schedule-container">Загрузка...</div>
 
     <!-- Модальное окно ДЗ -->
     <dialog id="hw-modal">
-        <h3 style="margin-top: 0;" id="hw-modal-title">Добавить ДЗ</h3>
-        <div style="margin-bottom: 10px; font-weight: bold; color: #64b5f6;" id="hw-lesson-info"></div>
-        <textarea id="hw-desc" rows="3" placeholder="Описание задания"></textarea>
-        <label style="font-size: 12px; color: #aaa;">Дедлайн:</label>
+        <h3 id="hw-modal-title">Добавить ДЗ</h3>
+        <div style="margin-bottom: 15px; font-size: 13px; color: var(--hint);" id="hw-lesson-info"></div>
+        <textarea id="hw-desc" rows="3" placeholder="Описание задания" style="resize: none;"></textarea>
+        <label style="font-size: 12px; color: var(--hint);">Дедлайн:</label>
         <input type="date" id="hw-due">
-        <button id="save-hw-btn" style="background: #2e7d32;">Сохранить</button>
-        <button id="close-hw-btn" style="background: #555;">Отмена</button>
+        <button id="save-hw-btn" style="background: #2e7d32; color: white; border: none;">Сохранить</button>
+        <button id="close-hw-btn" style="background: var(--card); color: var(--text); border: none;">Отмена</button>
     </dialog>
 
     <!-- Модальное окно Настроек -->
     <dialog id="settings-modal">
-        <h3 style="margin-top: 0;">Мои преподаватели</h3>
-        <p style="font-size: 12px; color: #aaa;">Выберите своих преподавателей, чтобы видеть только свои пары.</p>
+        <h3>Мои преподаватели</h3>
+        <p style="font-size: 13px; color: var(--hint); margin-top: -10px; margin-bottom: 15px;">Выберите своих преподавателей, чтобы скрыть чужие пары.</p>
 
-        <label style="font-size: 12px; color: #aaa;">Английский язык:</label>
+        <label style="font-size: 12px; color: var(--hint);">Английский язык:</label>
         <select id="set-eng-teacher">
             <option value="">-- Показывать всех --</option>
         </select>
 
-        <label style="font-size: 12px; color: #aaa;">Китайский язык:</label>
+        <label style="font-size: 12px; color: var(--hint);">Китайский язык:</label>
         <select id="set-chin-teacher">
             <option value="">-- Показывать всех --</option>
         </select>
 
-        <button id="save-settings-btn" style="background: #2e7d32;">Сохранить</button>
-        <button id="close-settings-btn" style="background: #555;">Отмена</button>
+        <button id="save-settings-btn" style="background: #2e7d32; color: white; border: none;">Сохранить</button>
+        <button id="close-settings-btn" style="background: var(--card); color: var(--text); border: none;">Отмена</button>
     </dialog>
 
     <div id="toast" class="toast">Готово!</div>
@@ -87,9 +126,10 @@
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
+        tg.headerColor = '#17212b';
 
         const urlParams = new URLSearchParams(window.location.search);
-        const groupName = urlParams.get('group') || 'МЭиТ26-8';
+        let groupName = urlParams.get('group') || 'МЭиТ26-8';
         const userId = tg.initDataUnsafe?.user?.id;
 
         document.getElementById('title').innerText = `Группа ${groupName}`;
@@ -101,12 +141,8 @@
         let userSettings = { eng_teacher: "", chin_teacher: "" };
 
         // Переменные для ДЗ
-        let hwModalSubject = "";
-        let hwModalTeacher = "";
-        let hwModalDate = "";
-        let isEditing = false;
+        let hwModalSubject = "", hwModalTeacher = "", hwModalDate = "", isEditing = false;
 
-        // DOM элементы
         const hwModal = document.getElementById('hw-modal');
         const settingsModal = document.getElementById('settings-modal');
         const datePicker = document.getElementById('date-picker');
@@ -117,8 +153,19 @@
             try {
                 const res = await fetch(`/api/role/${userId}`);
                 const data = await res.json();
+
+                // Проверяем роль
                 if (["teacher", "admin", "owner"].includes(data.role)) isTeacher = true;
-            } catch (e) { console.error("Ошибка роли", e); }
+
+                // СИНХРОНИЗАЦИЯ ГРУППЫ
+                if (data.group_name && data.group_name !== groupName) {
+                    console.log(`Группа изменилась: ${groupName} -> ${data.group_name}`);
+                    groupName = data.group_name;
+                    document.getElementById('title').innerText = `Группа ${groupName}`;
+                }
+            } catch (e) {
+                console.error("Ошибка проверки роли", e);
+            }
         }
 
         function showToast(message) {
@@ -126,13 +173,6 @@
             toast.innerText = message;
             toast.style.opacity = '1';
             setTimeout(() => { toast.style.opacity = '0'; }, 2500);
-        }
-
-        function parseLocalDate(dateStr) {
-            if (!dateStr) return new Date();
-            const parts = dateStr.split('-');
-            if (parts.length !== 3 || parseInt(parts[0]) < 2000) return new Date();
-            return new Date(parts[0], parts[1] - 1, parts[2]);
         }
 
         function getMonday(d) {
@@ -156,8 +196,43 @@
             return `${y}.${m}.${d}`;
         }
 
-        // --- НАСТРОЙКИ (ПРЕПОДАВАТЕЛИ) ---
-                document.getElementById('open-settings-btn').addEventListener('click', () => {
+        function getIsoDate(dateObj) {
+            const y = dateObj.getFullYear();
+            const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const d = String(dateObj.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+
+        // --- ВКЛАДКИ ДНЕЙ ---
+        function renderDayTabs(mondayDate, activeIsoDate) {
+            const container = document.getElementById('day-tabs-container');
+            container.innerHTML = '';
+
+            const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+            // Кнопка "Вся неделя"
+            const allBtn = document.createElement('div');
+            allBtn.className = `day-tab all-btn ${!activeIsoDate ? 'active' : ''}`;
+            allBtn.innerText = 'Все';
+            allBtn.onclick = () => updateAndLoad(currentDate, null);
+            container.appendChild(allBtn);
+
+            // Кнопки дней
+            for (let i = 0; i < 7; i++) {
+                const d = new Date(mondayDate);
+                d.setDate(mondayDate.getDate() + i);
+                const isoDate = getIsoDate(d);
+
+                const tab = document.createElement('div');
+                tab.className = `day-tab ${activeIsoDate === isoDate ? 'active' : ''}`;
+                tab.innerText = `${days[i]} ${d.getDate()}`;
+                tab.onclick = () => updateAndLoad(currentDate, isoDate);
+                container.appendChild(tab);
+            }
+        }
+
+        // --- НАСТРОЙКИ ---
+        document.getElementById('open-settings-btn').addEventListener('click', () => {
             const engSelect = document.getElementById('set-eng-teacher');
             const chinSelect = document.getElementById('set-chin-teacher');
 
@@ -167,13 +242,17 @@
             availableTeachers.eng.forEach(t => engSelect.innerHTML += `<option value="${t}">${t}</option>`);
             availableTeachers.chin.forEach(t => chinSelect.innerHTML += `<option value="${t}">${t}</option>`);
 
+            engSelect.value = userSettings.eng_teacher || "";
+            chinSelect.value = userSettings.chin_teacher || "";
+
             settingsModal.showModal();
         });
+
         document.getElementById('close-settings-btn').addEventListener('click', () => settingsModal.close());
 
         document.getElementById('save-settings-btn').addEventListener('click', async () => {
-            const eng = document.getElementById('set-eng-teacher').value;
-            const chin = document.getElementById('set-chin-teacher').value;
+            const eng = document.getElementById('set-eng-teacher').value || null;
+            const chin = document.getElementById('set-chin-teacher').value || null;
 
             try {
                 const res = await fetch(`/api/user/${userId}/settings`, {
@@ -185,9 +264,11 @@
                 if (res.ok) {
                     settingsModal.close();
                     showToast("✅ Настройки сохранены");
+                    userSettings.eng_teacher = eng;
+                    userSettings.chin_teacher = chin;
                     loadSchedule(currentDate, currentFocusDate);
                 }
-            } catch (e) { alert("Ошибка сохранения"); }
+            } catch (e) { alert("Ошибка сети"); }
         });
 
         // --- ДОБАВЛЕНИЕ/РЕДАКТИРОВАНИЕ ДЗ ---
@@ -206,7 +287,7 @@
             } else {
                 const d = new Date(date);
                 d.setDate(d.getDate() + 7);
-                document.getElementById('hw-due').value = d.toISOString().split('T')[0];
+                document.getElementById('hw-due').value = getIsoDate(d);
                 isEditing = false;
                 document.getElementById('hw-modal-title').innerText = "Новое ДЗ";
             }
@@ -242,25 +323,41 @@
         // --- ЗАГРУЗКА РАСПИСАНИЯ ---
         async function loadSchedule(baseDate, focusDate = null) {
             const container = document.getElementById('schedule-container');
-            container.innerHTML = 'Загрузка...';
+            container.innerHTML = `
+                <div class="skeleton-row"><div class="skeleton-block skeleton-time"></div><div class="skeleton-block skeleton-content"></div></div>
+                <div class="skeleton-row"><div class="skeleton-block skeleton-time"></div><div class="skeleton-block skeleton-content"></div></div>
+                <div class="skeleton-row"><div class="skeleton-block skeleton-time"></div><div class="skeleton-block skeleton-content"></div></div>
+            `;
             currentFocusDate = focusDate;
 
             const monday = getMonday(baseDate);
             const sunday = new Date(monday);
             sunday.setDate(monday.getDate() + 6);
 
+            // Отрисовываем вкладки дней
+            renderDayTabs(monday, focusDate);
+
             const startStr = formatDateForApi(monday);
             const endStr = formatDateForApi(sunday);
 
             try {
-                // Передаем user_id для фильтрации!
                 const response = await fetch(`/api/schedule/${encodeURIComponent(groupName)}?user_id=${userId}&start=${startStr}&end=${endStr}`);
-                if (!response.ok) throw new Error('Ошибка сети');
 
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Ошибка сети');
+                }
                 const data = await response.json();
                 const schedule = data.schedule || [];
                 const homeworks = data.homeworks || [];
+
                 availableTeachers = data.available_teachers || { eng: [], chin: [] };
+                userSettings = data.current_settings || { eng_teacher: "", chin_teacher: "" };
+                if (!userSettings.eng_teacher && !userSettings.chin_teacher) {
+                    document.getElementById('no-settings-warning').classList.remove('hidden');
+                } else {
+                    document.getElementById('no-settings-warning').classList.add('hidden');
+                }
 
                 if (schedule.length === 0) {
                     container.innerHTML = '<div class="empty-msg">На эту неделю занятий нет. 🎉</div>';
@@ -293,13 +390,13 @@
                                 const safeSub = encodeURIComponent(les.subject);
                                 const safeTeach = encodeURIComponent(les.teacher || '');
                                 const safeDesc = encodeURIComponent(hw.description);
-                                hwText += `<br><button class="edit-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" data-desc="${safeDesc}" data-due="${hw.due_date}" style="background: transparent; color: #64b5f6; border: none; padding: 0 5px; cursor: pointer; font-size: 16px; flex: none; box-shadow: none;" title="Редактировать">✏️</button>`;
-                                hwText += `<button class="del-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" style="background: transparent; color: #ff5252; border: none; padding: 0 5px; cursor: pointer; font-size: 16px; flex: none; box-shadow: none;" title="Удалить">🗑</button>`;
+                                hwText += `<br><div style="margin-top:5px;"><button class="btn-icon edit-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" data-desc="${safeDesc}" data-due="${hw.due_date}" style="width:28px; height:28px; font-size:14px; display:inline-flex; background:transparent; color:#64b5f6;" title="Ред.">✏️</button>`;
+                                hwText += `<button class="btn-icon del-hw-btn" data-date="${les.date}" data-subject="${safeSub}" data-teacher="${safeTeach}" style="width:28px; height:28px; font-size:14px; display:inline-flex; background:transparent; color:#ff5252;" title="Удалить">🗑</button></div>`;
                             }
                         } else if (isTeacher) {
                             const safeSubject = encodeURIComponent(les.subject);
                             const safeTeach = encodeURIComponent(les.teacher || '');
-                            hwText = `<button class="add-hw-btn" data-subject="${safeSubject}" data-date="${les.date}" data-teacher="${safeTeach}" style="padding: 4px 8px; font-size: 12px; flex: none; background: #2e7d32;">➕</button>`;
+                            hwText = `<button class="btn-icon add-hw-btn" data-subject="${safeSubject}" data-date="${les.date}" data-teacher="${safeTeach}" style="width:32px; height:32px; background:#2e7d32; font-size:16px;">➕</button>`;
                         }
 
                         html += `<tr>
@@ -322,12 +419,12 @@
                     container.innerHTML = html;
                 }
             } catch (e) {
-                container.innerText = 'Не удалось загрузить расписание.';
+                container.innerHTML = `<div class="empty-msg" style="color: #ff5252;">⚠️ ${e.message}</div>`;
                 console.error(e);
             }
         }
 
-        // --- ОБРАБОТЧИКИ СОБЫТИЙ (КЛИКИ) ---
+        // --- ОБРАБОТЧИКИ ---
         document.getElementById('schedule-container').addEventListener('click', async (e) => {
             if (e.target.classList.contains('add-hw-btn')) {
                 openHwModal(decodeURIComponent(e.target.getAttribute('data-subject')), e.target.getAttribute('data-date'), decodeURIComponent(e.target.getAttribute('data-teacher') || ''));
@@ -350,23 +447,36 @@
 
         function updateAndLoad(newDate, focusDate = null) {
             currentDate = newDate;
-            const y = currentDate.getFullYear();
-            const m = String(currentDate.getMonth() + 1).padStart(2, '0');
-            const d = String(currentDate.getDate()).padStart(2, '0');
-            datePicker.value = `${y}-${m}-${d}`;
+
+            // Если фокус не задан, ставим в инпут понедельник недели. Если задан — конкретную дату.
+            if (focusDate) {
+                datePicker.value = focusDate;
+            } else {
+                datePicker.value = getIsoDate(getMonday(newDate));
+            }
+
+            // Управление кнопкой "Текущая"
+            const isCurrentWeek = getMonday(new Date()).getTime() === getMonday(newDate).getTime();
+            const currentBtn = document.getElementById('current-week');
+            if (isCurrentWeek && !focusDate) {
+                currentBtn.style.display = 'none';
+            } else {
+                currentBtn.style.display = 'flex';
+            }
+
             loadSchedule(currentDate, focusDate);
         }
 
         function triggerSearch() {
             if (datePicker.value) {
-                const selectedDate = parseLocalDate(datePicker.value);
-                if (selectedDate.getFullYear() < 2000) { alert("Выберите корректную дату."); return; }
-                updateAndLoad(selectedDate, datePicker.value);
+                const parts = datePicker.value.split('-');
+                const selectedDate = new Date(parts[0], parts[1] - 1, parts[2]);
+                if (selectedDate.getFullYear() < 2000) return;
+                updateAndLoad(selectedDate, datePicker.value); // Всегда фокусируемся на выбранном дне
             }
         }
 
         datePicker.addEventListener('change', triggerSearch);
-        datePicker.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); triggerSearch(); datePicker.blur(); } });
         document.getElementById('search-btn').addEventListener('click', triggerSearch);
 
         document.getElementById('prev-week').addEventListener('click', () => {
@@ -384,6 +494,7 @@
         // --- СТАРТ ---
         async function init() {
             await checkRole();
+            const todayIso = getIsoDate(new Date());
             updateAndLoad(new Date(), null);
         }
         init();

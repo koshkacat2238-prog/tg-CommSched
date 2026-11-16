@@ -1,10 +1,10 @@
 from datetime import datetime
-from aiogram import F, Router
+from aiogram import F, Router, Bot
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+from database import db
 from config import ADMIN_ROLES
 from handlers.states import AddSchedule, SetGroupFSM, BanFSM
 from services import users, bans, schedule, audit
@@ -263,3 +263,54 @@ async def user_group_input(message: Message, db_user: dict, state: FSMContext):
         f"✅ Группа обновлена: <b>{group or '—'}</b>",
         reply_markup=keyboards.main_menu(db_user["role"]),
     )
+
+
+@router.callback_query(F.data.startswith("mod:approve:"))
+async def approve_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
+    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+
+    uid = int(cb.data.split(":")[2])
+    await users.approve_user(uid, db_user["user_id"])
+
+    await cb.message.edit_text(f"✅ Пользователь <code>{uid}</code> одобрен.")
+    try:
+        await bot.send_message(uid, "✅ <b>Ваша заявка одобрена!</b>\nНажмите /start, чтобы войти.")
+    except Exception:
+        pass  # Пользователь мог заблокировать бота
+
+
+@router.callback_query(F.data.startswith("mod:reject:"))
+async def reject_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
+    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+
+    uid = int(cb.data.split(":")[2])
+    await users.reject_user(uid, db_user["user_id"])
+
+    await cb.message.edit_text(f"❌ Пользователь <code>{uid}</code> отклонен и удален.")
+    try:
+        await bot.send_message(uid, "❌ <b>Ваша заявка отклонена.</b>\nВы не можете пользоваться этим ботом.")
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "menu:pending")
+async def pending_users(cb: CallbackQuery, db_user: dict):
+    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+
+    # Получаем всех, кто не одобрен
+    async with db().acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM users WHERE is_approved=FALSE")
+
+    if not rows:
+        return await cb.message.edit_text("✅ Нет новых заявок.", reply_markup=keyboards.back_to_menu())
+
+    text = "⏳ <b>Пользователи на модерации:</b>\n\n"
+    kb = InlineKeyboardBuilder()
+    for r in rows:
+        text += f"👤 {r['full_name']} (@{r['username'] or '—'})\nID: <code>{r['user_id']}</code>\n\n"
+        kb.button(text=f"✅ {r['full_name']}", callback_data=f"mod:approve:{r['user_id']}")
+        kb.button(text=f"❌ {r['full_name']}", callback_data=f"mod:reject:{r['user_id']}")
+
+    kb.button(text="⬅️ В меню", callback_data="menu:main")
+    kb.adjust(2)
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())

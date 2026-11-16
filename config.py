@@ -7,6 +7,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 REDIS_URL = os.getenv("REDIS_URL", "")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 
 ADMIN_ROLES = ("admin", "owner")
 TEACHER_ROLES = ("teacher", "admin", "owner")

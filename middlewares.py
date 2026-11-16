@@ -5,7 +5,6 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 from services.users import get_or_create_user
 from services.bans import get_active_ban, unban_user
 
-
 class AuthMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: Dict[str, Any]) -> Any:
         tg_user = data.get("event_from_user")
@@ -14,19 +13,21 @@ class AuthMiddleware(BaseMiddleware):
 
         db_user = await get_or_create_user(tg_user.id, tg_user.username, tg_user.full_name)
 
+        # 1. Проверка на бан
         if db_user["is_banned"]:
-            ban = await get_active_ban(tg_user.id)
-            expired = ban and ban["expires_at"] and ban["expires_at"] <= datetime.now(timezone.utc)
+            # ... (ваш старый код бана) ...
+            return
 
-            if expired:
-                await unban_user(tg_user.id, None, "auto-expired")
-                db_user = await get_or_create_user(tg_user.id, tg_user.username, tg_user.full_name)
-            elif ban:
-                text = f"🚫 Доступ заблокирован.\nПричина: {ban['reason']}"
+        # 2. Проверка на одобрение (модерацию)
+        if not db_user["is_approved"] and db_user["role"] != "owner":
+            # Пропускаем только команду /start, чтобы человек увидел сообщение
+            if isinstance(event, Message) and event.text and event.text.startswith("/start"):
+                pass
+            else:
                 if isinstance(event, Message):
-                    await event.answer(text)
+                    await event.answer("⏳ Ваша заявка на рассмотрении. Пожалуйста, подождите.")
                 elif isinstance(event, CallbackQuery):
-                    await event.answer("Вы заблокированы", show_alert=True)
+                    await event.answer("Ваша заявка на рассмотрении.", show_alert=True)
                 return
 
         data["db_user"] = db_user

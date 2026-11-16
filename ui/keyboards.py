@@ -12,8 +12,10 @@ def main_menu(role: str) -> InlineKeyboardMarkup:
         kb.button(text="👥 Пользователи", callback_data="menu:users")
         kb.button(text="🚫 Баны", callback_data="menu:bans")
         kb.button(text="📜 Логи", callback_data="menu:logs")
+        kb.button(text="⏳ Заявки", callback_data="menu:pending")
+    kb.button(text="🐞 Сообщить об ошибке", callback_data="menu:report")
 
-    kb.adjust(2, 1, 1, 2)
+    kb.adjust(2, 1, 1, 2, 1, 1)
     return kb.as_markup()
 
 

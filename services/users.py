@@ -15,19 +15,30 @@ async def get_or_create_user(user_id: int, username: str | None, full_name: str)
         return user
 
     role = "owner" if user_id == OWNER_ID else "student"
+    is_approved = True if user_id == OWNER_ID else False
 
     async with db().acquire() as conn:
         async with conn.transaction():
-            # Используем RETURNING *, чтобы получить созданную запись сразу
             row = await conn.fetchrow(
-                "INSERT INTO users(user_id, username, full_name, role) "
-                "VALUES($1,$2,$3,$4) RETURNING *",
-                user_id, username, full_name, role
+                "INSERT INTO users(user_id, username, full_name, role, is_approved) "
+                "VALUES($1,$2,$3,$4,$5) RETURNING *",
+                user_id, username, full_name, role, is_approved
             )
-            await audit.log(user_id, "user_register", user_id, f"role={role}")
+            await audit.log(user_id, "user_register", user_id, f"role={role} approved={is_approved}")
 
     return dict(row)
 
+async def approve_user(user_id: int, actor_id: int):
+    async with db().acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("UPDATE users SET is_approved=TRUE WHERE user_id=$1", user_id)
+            await audit.log(actor_id, "approve_user", user_id, "User approved")
+
+async def reject_user(user_id: int, actor_id: int):
+    async with db().acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM users WHERE user_id=$1", user_id)
+            await audit.log(actor_id, "reject_user", user_id, "User rejected and deleted")
 
 async def list_users(limit: int = 30) -> list[dict]:
     rows = await db().fetch("SELECT * FROM users ORDER BY created_at DESC LIMIT $1", limit)
