@@ -93,12 +93,20 @@
 
     <!-- Модальное окно ДЗ -->
     <dialog id="hw-modal">
-        <h3 id="hw-modal-title">Добавить ДЗ</h3>
+        <h3 style="margin-top: 0; margin-bottom: 10px;" id="hw-modal-title">Добавить ДЗ</h3>
         <div style="margin-bottom: 15px; font-size: 13px; color: var(--hint);" id="hw-lesson-info"></div>
-        <textarea id="hw-desc" rows="3" placeholder="Описание задания" style="resize: none;"></textarea>
-        <label style="font-size: 12px; color: var(--hint);">Дедлайн:</label>
-        <input type="date" id="hw-due">
-        <button id="save-hw-btn" style="background: #2e7d32; color: white; border: none;">Сохранить</button>
+
+        <textarea id="hw-desc" rows="3" placeholder="Что нужно сделать?" style="resize: none; margin-bottom: 15px;"></textarea>
+
+        <!-- БЛОК ВЫБОРА ДАТЫ -->
+        <div style="background: var(--card); padding: 12px; border-radius: 10px; margin-bottom: 15px; border: 1px solid rgba(255,255,255,0.1);">
+            <label style="font-size: 13px; color: var(--text); display: block; margin-bottom: 8px; font-weight: bold;">
+                📅 Сдать до (дедлайн):
+            </label>
+            <input type="date" id="hw-due" style="margin: 0; padding: 10px; font-size: 16px; background: var(--bg); border: none; width: 100%; border-radius: 6px; color: white;">
+        </div>
+
+        <button id="save-hw-btn" style="background: #2e7d32; color: white; border: none; margin-bottom: 8px;">Сохранить</button>
         <button id="close-hw-btn" style="background: var(--card); color: var(--text); border: none;">Отмена</button>
     </dialog>
 
@@ -281,10 +289,12 @@
             document.getElementById('hw-desc').value = desc;
 
             if (due) {
+                // Если это редактирование, ставим ту дату, которая уже сохранена в БД
                 document.getElementById('hw-due').value = due;
                 isEditing = true;
                 document.getElementById('hw-modal-title').innerText = "Редактировать ДЗ";
             } else {
+                // Если это новое ДЗ, ставим дефолт: через 7 дней ПОСЛЕ самой пары
                 const d = new Date(date);
                 d.setDate(d.getDate() + 7);
                 document.getElementById('hw-due').value = getIsoDate(d);

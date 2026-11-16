@@ -109,6 +109,27 @@ async def ban_apply(cb: CallbackQuery, db_user: dict, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("🚫 Пользователь забанен.", reply_markup=keyboards.back_to_menu())
 
+
+@router.callback_query(F.data.startswith("usr:unban:"))
+async def user_unban(cb: CallbackQuery, db_user: dict):
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
+
+    uid = int(cb.data.split(":")[2])
+
+    # Вызываем функцию из сервиса банов
+    await bans.unban_user(uid, db_user["user_id"], "Ручной разбан админом")
+
+    await cb.answer("✅ Пользователь разбанен", show_alert=True)
+
+    # Обновляем карточку пользователя, чтобы кнопка "Разбанить" сменилась на "Забанить"
+    u = await users.get_user(uid)
+    if u:
+        await cb.message.edit_text(
+            format_user_card(u),
+            reply_markup=keyboards.user_card(uid, bool(u["is_banned"]))
+        )
+
 @router.callback_query(F.data == "menu:bans")
 async def active_bans(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
