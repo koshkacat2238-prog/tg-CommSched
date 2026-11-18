@@ -11,7 +11,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-CommSchedBot}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-CommSchedBot}" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -19,13 +19,13 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: [ "redis-server", "--appendonly", "yes" ]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -33,7 +33,11 @@ services:
   bot:
     build: .
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       - .:/app
     depends_on:
@@ -46,7 +50,8 @@ services:
     build: .
     restart: unless-stopped
     command: uvicorn webapp.main:app --host 0.0.0.0 --port 8000
-    env_file: .env
+    env_file:
+      - .env
     volumes:
       - .:/app
     ports:
