@@ -62,6 +62,9 @@ async def get_user_role(user_id: int):
         return {"role": "student", "group_name": None}
     return {"role": user["role"], "group_name": user["group_name"]}
 
+@app.get("/privacy")
+async def privacy_policy():
+    return FileResponse("webapp/static/privacy.html")
 
 @app.put("/api/user/{user_id}/settings")
 async def save_settings(user_id: int, settings: UserSettings):

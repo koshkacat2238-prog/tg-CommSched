@@ -2,11 +2,13 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import ADMIN_ROLES, TEACHER_ROLES
+from config import AVAILABLE_GROUPS
 
 
 def main_menu(role: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📅 Расписание", callback_data="menu:schedule")
+    kb.button(text="📁 Выбрать группу", callback_data="menu:choose_group")
 
     if role in ADMIN_ROLES:
         kb.button(text="👥 Пользователи", callback_data="menu:users")
@@ -73,3 +75,11 @@ def persistent_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="🏠 Главное меню")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
+
+def select_group_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for g in AVAILABLE_GROUPS:
+        kb.button(text=f"📁 {g}", callback_data=f"usr:my_grp:{g}")
+    kb.button(text="⬅️ В меню", callback_data="menu:main")
+    kb.adjust(1)
+    return kb.as_markup()

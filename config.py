@@ -16,3 +16,7 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 if OWNER_ID == 0:
     raise RuntimeError("OWNER_ID is not set")
+AVAILABLE_GROUPS = [
+    "МЭиТ26-8",
+    "МЭиТ26-9"
+]

@@ -85,3 +85,7 @@ async def list_users_by_group(group_name: str) -> list[dict]:
     else:
         rows = await db().fetch("SELECT * FROM users WHERE group_name = $1 ORDER BY created_at DESC", group_name)
     return [dict(r) for r in rows]
+
+async def agree_to_privacy(user_id: int):
+    async with db().acquire() as conn:
+        await conn.execute("UPDATE users SET is_agreed = TRUE WHERE user_id = $1", user_id)
