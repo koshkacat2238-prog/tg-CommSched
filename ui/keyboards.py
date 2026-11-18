@@ -1,8 +1,6 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from config import ADMIN_ROLES, TEACHER_ROLES
-from config import AVAILABLE_GROUPS
+from config import ADMIN_ROLES, AVAILABLE_GROUPS
 
 
 def main_menu(role: str) -> InlineKeyboardMarkup:
@@ -17,7 +15,10 @@ def main_menu(role: str) -> InlineKeyboardMarkup:
         kb.button(text="⏳ Заявки", callback_data="menu:pending")
     kb.button(text="🐞 Сообщить об ошибке", callback_data="menu:report")
 
-    kb.adjust(2, 1, 1, 2, 1, 1)
+    if role in ADMIN_ROLES:
+        kb.adjust(2, 2, 2, 1)
+    else:
+        kb.adjust(2, 1)
     return kb.as_markup()
 
 
@@ -30,7 +31,7 @@ def back_to_menu() -> InlineKeyboardMarkup:
 def user_card(user_id: int, is_banned: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Роль", callback_data=f"usr:role:{user_id}")
-    kb.button(text="📁 Группа", callback_data=f"usr:group:{user_id}")  # <--- КНОПКА ГРУППЫ ЗДЕСЬ
+    kb.button(text="📁 Группа", callback_data=f"usr:group:{user_id}")
     if is_banned:
         kb.button(text="✅ Разбанить", callback_data=f"usr:unban:{user_id}")
     else:
@@ -40,12 +41,13 @@ def user_card(user_id: int, is_banned: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def roles_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def roles_keyboard(user_id: int, actor_role: str = "admin") -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for r in ("student", "teacher", "admin"):
+    available_roles = ("student", "teacher", "admin") if actor_role == "owner" else ("student", "teacher")
+    for r in available_roles:
         kb.button(text=r, callback_data=f"usr:setrole:{user_id}:{r}")
     kb.button(text="⬅️ Отмена", callback_data=f"usr:card:{user_id}")
-    kb.adjust(3, 1)
+    kb.adjust(len(available_roles), 1)
     return kb.as_markup()
 
 
@@ -58,23 +60,11 @@ def ban_duration_keyboard(user_id: int) -> InlineKeyboardMarkup:
     kb.adjust(3, 1)
     return kb.as_markup()
 
-def schedule_nav() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Пн", callback_data="sched:day:0")
-    kb.button(text="Вт", callback_data="sched:day:1")
-    kb.button(text="Ср", callback_data="sched:day:2")
-    kb.button(text="Чт", callback_data="sched:day:3")
-    kb.button(text="Пт", callback_data="sched:day:4")
-    kb.button(text="Сб", callback_data="sched:day:5")
-    kb.button(text="⬅️ В меню", callback_data="menu:main")
-    kb.adjust(4, 3, 1) # 5 дней в ряд, кнопка меню снизу
-    return kb.as_markup()
+
 def persistent_menu() -> ReplyKeyboardMarkup:
-    """Клавиатура, которая всегда висит внизу экрана."""
-    kb = [
-        [KeyboardButton(text="🏠 Главное меню")]
-    ]
+    kb = [[KeyboardButton(text="🏠 Главное меню")]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
+
 
 def select_group_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()

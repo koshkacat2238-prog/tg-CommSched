@@ -1,27 +1,30 @@
-from datetime import datetime
+import html
 from aiogram import F, Router, Bot
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from database import db
 from config import ADMIN_ROLES
 from handlers.states import AddSchedule, SetGroupFSM, BanFSM
 from services import users, bans, schedule, audit
-from ui import keyboards, texts
+from ui import keyboards
 from ui.formatters import format_user_card
 
 router = Router()
+
 
 @router.message(Command("cancel"), StateFilter("*"))
 async def cancel_any(message: Message, state: FSMContext, db_user: dict):
     await state.clear()
     await message.answer("Отменено.", reply_markup=keyboards.main_menu(db_user["role"]))
 
+
 # --- Управление пользователями ---
 @router.callback_query(F.data == "menu:users")
-async def users_group_list(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+async def users_group_list(cb: CallbackQuery, db_user: dict, state: FSMContext):
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
+    await state.clear()
 
     groups = await users.get_groups_with_users()
 
@@ -31,14 +34,16 @@ async def users_group_list(cb: CallbackQuery, db_user: dict):
 
     kb.button(text="👤 Без группы", callback_data="usr:grp:None")
     kb.button(text="⬅️ В меню", callback_data="menu:main")
-    kb.adjust(2, 1, 1)  # Красиво выравниваем кнопки
+    kb.adjust(2, 1, 1)
 
     await cb.message.edit_text("👥 Выберите группу для просмотра:", reply_markup=kb.as_markup())
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:grp:"))
 async def users_in_group(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
     group_name = cb.data.split(":", 2)[2]
     users_list = await users.list_users_by_group(group_name)
 
@@ -50,79 +55,98 @@ async def users_in_group(cb: CallbackQuery, db_user: dict):
     kb.button(text="⬅️ К группам", callback_data="menu:users")
     kb.adjust(1)
 
-    display_name = "Без группы" if group_name == "None" else group_name
+    display_name = "Без группы" if group_name == "None" else html.escape(group_name)
     await cb.message.edit_text(f"👥 Пользователи в группе <b>{display_name}</b>:", reply_markup=kb.as_markup())
+    await cb.answer()
+
 
 @router.callback_query(F.data.startswith("usr:card:"))
-async def user_card_view(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+async def user_card_view(cb: CallbackQuery, db_user: dict, state: FSMContext):
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
+    await state.clear()  # Сбрасываем FSM, если админ нажал "Отмена" при бане
     uid = int(cb.data.split(":")[2])
     u = await users.get_user(uid)
     if not u:
         return await cb.answer("Пользователь не найден", show_alert=True)
     await cb.message.edit_text(format_user_card(u), reply_markup=keyboards.user_card(uid, bool(u["is_banned"])))
+    await cb.answer()
+
 
 @router.callback_query(F.data.startswith("usr:role:"))
 async def user_role_menu(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
     uid = int(cb.data.split(":")[2])
     target = await users.get_user(uid)
-    if not users.can_manage(db_user, target): return await cb.answer("Нельзя изменить этого пользователя", show_alert=True)
-    await cb.message.edit_text("Выберите роль:", reply_markup=keyboards.roles_keyboard(uid))
+    if not users.can_manage(db_user, target):
+        return await cb.answer("Нельзя изменить этого пользователя", show_alert=True)
+    await cb.message.edit_text("Выберите роль:", reply_markup=keyboards.roles_keyboard(uid, db_user["role"]))
+    await cb.answer()
+
 
 @router.callback_query(F.data.startswith("usr:setrole:"))
 async def user_set_role(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
     _, _, uid_s, role = cb.data.split(":")
     uid = int(uid_s)
     target = await users.get_user(uid)
-    if not users.can_manage(db_user, target): return await cb.answer("Нельзя", show_alert=True)
+    if not users.can_manage(db_user, target, new_role=role):
+        return await cb.answer("Недостаточно прав для назначения этой роли", show_alert=True)
     await users.set_role(uid, role, db_user["user_id"])
     await cb.answer("Роль изменена")
     u = await users.get_user(uid)
-    await cb.message.edit_text(format_user_card(u), reply_markup=keyboards.user_card(uid, bool(u["is_banned"])))
+    if u:
+        await cb.message.edit_text(format_user_card(u), reply_markup=keyboards.user_card(uid, bool(u["is_banned"])))
+
 
 # --- Баны ---
 @router.callback_query(F.data.startswith("usr:ban:"))
 async def ban_start(cb: CallbackQuery, db_user: dict, state: FSMContext):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
     uid = int(cb.data.split(":")[2])
     target = await users.get_user(uid)
-    if not users.can_manage(db_user, target): return await cb.answer("Нельзя забанить", show_alert=True)
+    if not users.can_manage(db_user, target):
+        return await cb.answer("Нельзя забанить этого пользователя", show_alert=True)
     await state.update_data(target_uid=uid)
     await state.set_state(BanFSM.reason)
-    await cb.message.answer(f"Причина бана <b>{target['full_name']}</b>:")
+    await cb.message.answer(f"Причина бана <b>{html.escape(target['full_name'])}</b> (или /cancel):")
+    await cb.answer()
 
-@router.message(BanFSM.reason)
+
+@router.message(BanFSM.reason, F.text)
 async def ban_reason(message: Message, state: FSMContext):
     await state.update_data(reason=message.text.strip())
     data = await state.get_data()
     await message.answer("Срок:", reply_markup=keyboards.ban_duration_keyboard(data["target_uid"]))
 
+
 @router.callback_query(F.data.startswith("usr:doBan:"))
 async def ban_apply(cb: CallbackQuery, db_user: dict, state: FSMContext):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
     _, _, uid_s, days_s = cb.data.split(":")
     uid, days = int(uid_s), int(days_s)
+    target = await users.get_user(uid)
+    if not users.can_manage(db_user, target):
+        return await cb.answer("Нельзя забанить этого пользователя", show_alert=True)
     data = await state.get_data()
     await bans.ban_user(uid, db_user["user_id"], data.get("reason", "Без причины"), days if days > 0 else None)
     await state.clear()
     await cb.message.edit_text("🚫 Пользователь забанен.", reply_markup=keyboards.back_to_menu())
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:unban:"))
 async def user_unban(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
         return await cb.answer("Нет прав", show_alert=True)
-
     uid = int(cb.data.split(":")[2])
-
-    # Вызываем функцию из сервиса банов
     await bans.unban_user(uid, db_user["user_id"], "Ручной разбан админом")
-
     await cb.answer("✅ Пользователь разбанен", show_alert=True)
 
-    # Обновляем карточку пользователя, чтобы кнопка "Разбанить" сменилась на "Забанить"
     u = await users.get_user(uid)
     if u:
         await cb.message.edit_text(
@@ -130,96 +154,96 @@ async def user_unban(cb: CallbackQuery, db_user: dict):
             reply_markup=keyboards.user_card(uid, bool(u["is_banned"]))
         )
 
+
 @router.callback_query(F.data == "menu:bans")
 async def active_bans(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
     bans_list = await bans.list_active_bans()
-    text = "✅ Активных банов нет." if not bans_list else "🚫 Активные баны:\n\n"
+    text = "✅ Активных банов нет." if not bans_list else "🚫 <b>Активные баны:</b>\n\n"
     for b in bans_list:
-        t = await users.get_user(b["user_id"])
+        full_name = html.escape(b.get("full_name") or "Неизвестный")
+        reason = html.escape(b.get("reason") or "—")
         exp = b["expires_at"].strftime("%Y-%m-%d %H:%M") if b["expires_at"] else "навсегда"
-        text += f"• {t['full_name']} (ID {b['user_id']}) до {exp}. Причина: {b['reason']}\n"
+        text += f"• {full_name} (ID <code>{b['user_id']}</code>) до {exp}. Причина: {reason}\n"
     await cb.message.edit_text(text, reply_markup=keyboards.back_to_menu())
+    await cb.answer()
+
 
 # --- Аудит ---
 @router.callback_query(F.data == "menu:logs")
 async def logs_menu(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
-    logs = await audit.get_logs(20) # Для простоты добавлен get_logs в audit.py (см. примечание ниже)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
+    logs = await audit.get_logs(20)
     lines = ["📜 <b>Логи:</b>\n"]
     for l in logs:
-        lines.append(f"• {l['created_at'].strftime('%m-%d %H:%M')} {l['action']} (ID {l['actor_id']}) {l['details'] or ''}")
+        action = html.escape(l["action"] or "")
+        details = html.escape(l["details"] or "")
+        lines.append(f"• {l['created_at'].strftime('%m-%d %H:%M')} {action} (ID {l['actor_id']}) {details}")
     await cb.message.edit_text("\n".join(lines), reply_markup=keyboards.back_to_menu())
+    await cb.answer()
 
 
-# 1. Ловим нажатие кнопки в меню
+# --- Ручное добавление расписания ---
 @router.callback_query(F.data == "menu:add_schedule")
 async def add_sched_start(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
         return await cb.answer("Нет прав", show_alert=True)
-
-    # Включаем ожидание первого ответа
     await state.set_state(AddSchedule.group)
     await cb.message.edit_text("Шаг 1/8. Введите название группы (например, МЭиТ26-8):")
     await cb.answer()
 
 
-# 2. Получаем группу и спрашиваем день
-@router.message(AddSchedule.group)
+@router.message(AddSchedule.group, F.text)
 async def add_sched_group(message: Message, state: FSMContext):
-    await state.update_data(group=message.text.strip())  # Сохраняем в память
-    await state.set_state(AddSchedule.day)  # Переключаем состояние
+    await state.update_data(group=message.text.strip())
+    await state.set_state(AddSchedule.day)
     await message.answer("Шаг 2/8. Введите день недели (1=Пн, 2=Вт... 7=Вс):")
 
 
-# 3. Получаем день и спрашиваем время начала
-@router.message(AddSchedule.day)
+@router.message(AddSchedule.day, F.text)
 async def add_sched_day(message: Message, state: FSMContext):
     try:
         d = int(message.text.strip())
         assert 1 <= d <= 7
-    except:
+    except Exception:
         return await message.answer("Ошибка! Введите число от 1 до 7:")
 
-    await state.update_data(day=d - 1)  # В базе дни от 0 до 6
+    await state.update_data(day=d - 1)
     await state.set_state(AddSchedule.time_start)
     await message.answer("Шаг 3/8. Введите ВРЕМЯ НАЧАЛА (например, 10:10):")
 
 
-# 4. Получаем время начала и спрашиваем время конца
-@router.message(AddSchedule.time_start)
+@router.message(AddSchedule.time_start, F.text)
 async def add_sched_t_start(message: Message, state: FSMContext):
     await state.update_data(time_start=message.text.strip())
     await state.set_state(AddSchedule.time_end)
     await message.answer("Шаг 4/8. Введите ВРЕМЯ ОКОНЧАНИЯ (например, 11:40):")
 
 
-# 5. Получаем время конца и спрашиваем предмет
-@router.message(AddSchedule.time_end)
+@router.message(AddSchedule.time_end, F.text)
 async def add_sched_t_end(message: Message, state: FSMContext):
     await state.update_data(time_end=message.text.strip())
     await state.set_state(AddSchedule.subject)
     await message.answer("Шаг 5/8. Введите НАЗВАНИЕ ПРЕДМЕТА:")
 
 
-# 6. Получаем предмет и спрашиваем тип
-@router.message(AddSchedule.subject)
+@router.message(AddSchedule.subject, F.text)
 async def add_sched_subject(message: Message, state: FSMContext):
     await state.update_data(subject=message.text.strip())
     await state.set_state(AddSchedule.lesson_type)
     await message.answer("Шаг 6/8. Введите ТИП ЗАНЯТИЯ (Лекция или Практика):")
 
 
-# 7. Получаем тип и спрашиваем преподавателя
-@router.message(AddSchedule.lesson_type)
+@router.message(AddSchedule.lesson_type, F.text)
 async def add_sched_type(message: Message, state: FSMContext):
     await state.update_data(lesson_type=message.text.strip())
     await state.set_state(AddSchedule.teacher)
     await message.answer("Шаг 7/8. Введите ФАМИЛИЮ ПРЕПОДАВАТЕЛЯ (или '-' если нет):")
 
 
-# 8. Получаем преподавателя и спрашиваем аудиторию
-@router.message(AddSchedule.teacher)
+@router.message(AddSchedule.teacher, F.text)
 async def add_sched_teacher(message: Message, state: FSMContext):
     t = message.text.strip()
     await state.update_data(teacher=t if t != "-" else "")
@@ -227,15 +251,11 @@ async def add_sched_teacher(message: Message, state: FSMContext):
     await message.answer("Шаг 8/8. Введите АУДИТОРИЮ (например, ЛП49/2/419):")
 
 
-# 9. Получаем аудиторию, собираем все данные и сохраняем в БД
-@router.message(AddSchedule.room)
+@router.message(AddSchedule.room, F.text)
 async def add_sched_room(message: Message, state: FSMContext, db_user: dict):
     r = message.text.strip()
-
-    # Достаем ВСЕ данные, которые накопили за предыдущие 7 шагов
     data = await state.get_data()
 
-    # Отправляем в сервис (в базу данных)
     await schedule.add_schedule(
         day_of_week=data["day"],
         time_start=data["time_start"],
@@ -246,16 +266,14 @@ async def add_sched_room(message: Message, state: FSMContext, db_user: dict):
         room=r if r != "-" else "",
         group_name=data["group"]
     )
-
-    # Очищаем память (выходим из режима добавления)
     await state.clear()
-
     await message.answer(
         "✅ Занятие успешно добавлено в базу!",
         reply_markup=keyboards.main_menu(db_user["role"])
     )
 
-# --- НАЗНАЧЕНИЕ ГРУППЫ ---
+
+# --- Назначение группы ---
 @router.callback_query(F.data.startswith("usr:group:"))
 async def user_group_prompt(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
@@ -263,51 +281,55 @@ async def user_group_prompt(cb: CallbackQuery, db_user: dict, state: FSMContext)
 
     uid = int(cb.data.split(":")[2])
     await state.update_data(target_uid=uid)
-    await state.set_state(SetGroupFSM.waiting)  # Включаем режим ожидания текста
+    await state.set_state(SetGroupFSM.waiting)
 
     await cb.message.answer("Введите название группы (или '-' чтобы очистить, /cancel для отмены):")
     await cb.answer()
 
 
-@router.message(SetGroupFSM.waiting)
+@router.message(SetGroupFSM.waiting, F.text)
 async def user_group_input(message: Message, db_user: dict, state: FSMContext):
-    # Этот хендлер сработает, когда вы напишете текст, пока бот в состоянии SetGroupFSM.waiting
     data = await state.get_data()
     group = message.text.strip()
     if group == "-":
         group = ""
 
     await users.set_group(data["target_uid"], group, db_user["user_id"])
-    await state.clear()  # Выключаем режим ожидания
+    await state.clear()
 
     await message.answer(
-        f"✅ Группа обновлена: <b>{group or '—'}</b>",
+        f"✅ Группа обновлена: <b>{html.escape(group) or '—'}</b>",
         reply_markup=keyboards.main_menu(db_user["role"]),
     )
 
 
+# --- Модерация заявок ---
 @router.callback_query(F.data.startswith("mod:approve:"))
 async def approve_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
 
     uid = int(cb.data.split(":")[2])
     await users.approve_user(uid, db_user["user_id"])
 
     await cb.message.edit_text(f"✅ Пользователь <code>{uid}</code> одобрен.")
+    await cb.answer()
     try:
         await bot.send_message(uid, "✅ <b>Ваша заявка одобрена!</b>\nНажмите /start, чтобы войти.")
     except Exception:
-        pass  # Пользователь мог заблокировать бота
+        pass
 
 
 @router.callback_query(F.data.startswith("mod:reject:"))
 async def reject_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
 
     uid = int(cb.data.split(":")[2])
     await users.reject_user(uid, db_user["user_id"])
 
     await cb.message.edit_text(f"❌ Пользователь <code>{uid}</code> отклонен и удален.")
+    await cb.answer()
     try:
         await bot.send_message(uid, "❌ <b>Ваша заявка отклонена.</b>\nВы не можете пользоваться этим ботом.")
     except Exception:
@@ -316,22 +338,24 @@ async def reject_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
 
 @router.callback_query(F.data == "menu:pending")
 async def pending_users(cb: CallbackQuery, db_user: dict):
-    if db_user["role"] not in ADMIN_ROLES: return await cb.answer("Нет прав", show_alert=True)
+    if db_user["role"] not in ADMIN_ROLES:
+        return await cb.answer("Нет прав", show_alert=True)
 
-    # Получаем всех, кто не одобрен
-    async with db().acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM users WHERE is_approved=FALSE")
-
+    rows = await users.list_pending_users()
     if not rows:
-        return await cb.message.edit_text("✅ Нет новых заявок.", reply_markup=keyboards.back_to_menu())
+        await cb.message.edit_text("✅ Нет новых заявок.", reply_markup=keyboards.back_to_menu())
+        return await cb.answer()
 
     text = "⏳ <b>Пользователи на модерации:</b>\n\n"
     kb = InlineKeyboardBuilder()
-    for r in rows:
-        text += f"👤 {r['full_name']} (@{r['username'] or '—'})\nID: <code>{r['user_id']}</code>\n\n"
-        kb.button(text=f"✅ {r['full_name']}", callback_data=f"mod:approve:{r['user_id']}")
-        kb.button(text=f"❌ {r['full_name']}", callback_data=f"mod:reject:{r['user_id']}")
+    for r in rows[:20]:
+        safe_name = html.escape(r["full_name"])
+        safe_user = html.escape(r["username"] or "—")
+        text += f"👤 {safe_name} (@{safe_user})\nID: <code>{r['user_id']}</code>\n\n"
+        kb.button(text=f"✅ {r['full_name'][:20]}", callback_data=f"mod:approve:{r['user_id']}")
+        kb.button(text=f"❌ {r['full_name'][:20]}", callback_data=f"mod:reject:{r['user_id']}")
 
     kb.button(text="⬅️ В меню", callback_data="menu:main")
     kb.adjust(2)
     await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
