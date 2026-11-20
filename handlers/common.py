@@ -3,6 +3,7 @@ from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest
 from config import OWNER_ID, WEBAPP_URL, AVAILABLE_GROUPS
 from ui import keyboards, texts
 from services import users
@@ -93,10 +94,13 @@ async def reply_menu(message: Message, db_user: dict):
 
 @router.callback_query(F.data == "menu:main")
 async def menu_main(cb: CallbackQuery, db_user: dict):
-    await cb.message.edit_text(
-        texts.MENU_MAIN,
-        reply_markup=keyboards.main_menu(db_user["role"])
-    )
+    try:
+        await cb.message.edit_text(
+            texts.MENU_MAIN,
+            reply_markup=keyboards.main_menu(db_user["role"])
+        )
+    except TelegramBadRequest:
+        pass
     await cb.answer()
 
 

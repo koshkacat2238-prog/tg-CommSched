@@ -29,7 +29,6 @@ class IPv4Session(AiohttpSession):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._connector_init["family"] = socket.AF_INET
-        # Не переиспользуем keep-alive сокеты, которые могут обрываться DPI/Cloudflare
         self._connector_init["force_close"] = True
 
 
@@ -40,10 +39,10 @@ async def main():
     if cf_api_url:
         session = IPv4Session(
             api=TelegramAPIServer.from_base(cf_api_url),
-            timeout=30
+            timeout=15
         )
     else:
-        session = IPv4Session(timeout=30)
+        session = IPv4Session(timeout=15)
 
     storage = RedisStorage.from_url(
         REDIS_URL,
@@ -75,7 +74,7 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Bot started")
     try:
-        await dp.start_polling(bot, polling_timeout=10)
+        await dp.start_polling(bot, polling_timeout=8)
     finally:
         await storage.close()
         await close_pool()
