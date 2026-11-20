@@ -3,12 +3,11 @@ import hashlib
 import hmac
 import html
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from typing import Optional
 from urllib.parse import parse_qsl
-from fastapi import FastAPI, HTTPException
-from database import get_pool
 
 import httpx
 import redis.asyncio as redis
@@ -18,12 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import BOT_TOKEN, REDIS_URL
-from database import close_pool, init_pool
+from database import close_pool, get_pool, init_pool
 from services import homework as hw_service, users as user_service
 from services.parser import fetch_schedule_from_ruz
 
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
+CF_API_URL = os.getenv("CF_API_URL", "https://api.telegram.org").strip().rstrip("/")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,26 +40,33 @@ app.mount("/static", StaticFiles(directory="webapp/static"), name="static")
 def verify_telegram_init_data(init_data: str | None) -> int | None:
     """Проверяет подпись Telegram WebApp initData и возвращает достоверный user_id."""
     if not init_data:
-        return None
-    try:
-        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
-        received_hash = parsed.pop("hash", None)
-        if not received_hash:
-            return None
+        raise HTTPException(status_code=401, detail="Отсутствует заголовок X-Telegram-Init-Data")
 
-        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
-        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-        calculated_hash = hmac.new(
-            secret_key, data_check_string.encode(), hashlib.sha256
-        ).hexdigest()
+    parsed = dict(parse_qsl(init_data, strict_parsing=True, keep_blank_values=True))
+    received_hash = parsed.pop("hash", None)
+    if not received_hash:
+        raise HTTPException(status_code=401, detail="Некорректный формат initData")
 
-        if not hmac.compare_digest(calculated_hash, received_hash):
-            return None
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+    calculated_hash = hmac.new(
+        secret_key, data_check_string.encode(), hashlib.sha256
+    ).hexdigest()
 
-        user_data = json.loads(parsed.get("user", "{}"))
-        return int(user_data["id"]) if "id" in user_data else None
-    except Exception:
-        return None
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        raise HTTPException(status_code=403, detail="Подпись initData не прошла проверку")
+
+    user_raw = parsed.get("user")
+    if not user_raw:
+        raise HTTPException(status_code=401, detail="Данные пользователя не переданы")
+
+    user_data = json.loads(user_raw)
+    user_id = user_data.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="В initData отсутствует id пользователя")
+
+    # Возвращаем именно числовой ID, а не весь словарь user_data
+    return int(user_id)
 
 
 def resolve_actor_id(fallback_user_id: int | None, x_telegram_init_data: str | None) -> int:
@@ -160,11 +167,13 @@ async def create_homework(
     )
 
     async def send_notifications():
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Используем IPv4 и отключаем keep-alive, чтобы Cloudflare Worker не обрывал соединения
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+        async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
             for student in students:
                 try:
                     await client.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        f"{CF_API_URL}/bot{BOT_TOKEN}/sendMessage",
                         json={"chat_id": student["user_id"], "text": text, "parse_mode": "HTML"}
                     )
                     await asyncio.sleep(0.05)

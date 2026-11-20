@@ -5,7 +5,6 @@ from config import ADMIN_ROLES, AVAILABLE_GROUPS
 
 def main_menu(role: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="📅 Расписание", callback_data="menu:schedule")
     kb.button(text="📁 Выбрать группу", callback_data="menu:choose_group")
 
     if role in ADMIN_ROLES:
@@ -16,7 +15,7 @@ def main_menu(role: str) -> InlineKeyboardMarkup:
     kb.button(text="🐞 Сообщить об ошибке", callback_data="menu:report")
 
     if role in ADMIN_ROLES:
-        kb.adjust(2, 2, 2, 1)
+        kb.adjust(1, 2, 2, 1)
     else:
         kb.adjust(2, 1)
     return kb.as_markup()
