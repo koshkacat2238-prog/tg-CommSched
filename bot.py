@@ -7,7 +7,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.storage.redis import DefaultKeyBuilder, RedisStorage
+from aiogram.types import ErrorEvent
 from dotenv import load_dotenv
 
 from config import BOT_TOKEN, REDIS_URL
@@ -27,6 +29,8 @@ class IPv4Session(AiohttpSession):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._connector_init["family"] = socket.AF_INET
+        # Не переиспользуем keep-alive сокеты, которые могут обрываться DPI/Cloudflare
+        self._connector_init["force_close"] = True
 
 
 async def main():
@@ -36,10 +40,10 @@ async def main():
     if cf_api_url:
         session = IPv4Session(
             api=TelegramAPIServer.from_base(cf_api_url),
-            timeout=60
+            timeout=30
         )
     else:
-        session = IPv4Session(timeout=60)
+        session = IPv4Session(timeout=30)
 
     storage = RedisStorage.from_url(
         REDIS_URL,
@@ -52,10 +56,17 @@ async def main():
     )
     dp = Dispatcher(storage=storage)
 
+    @dp.errors()
+    async def global_error_handler(event: ErrorEvent):
+        if isinstance(event.exception, (TelegramNetworkError, TelegramBadRequest)):
+            logging.warning(f"Telegram API transient error: {event.exception}")
+            return True
+        logging.exception("Unhandled error", exc_info=event.exception)
+        return True
+
     dp.message.middleware(AuthMiddleware())
     dp.callback_query.middleware(AuthMiddleware())
 
-    # Порядок важен: /cancel должен ловиться первым
     dp.include_router(admin_handlers.router)
     dp.include_router(teacher_handlers.router)
     dp.include_router(common_handlers.router)
@@ -64,7 +75,7 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Bot started")
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, polling_timeout=10)
     finally:
         await storage.close()
         await close_pool()
