@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import socket
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -9,11 +11,11 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.storage.redis import DefaultKeyBuilder, RedisStorage
-from aiogram.types import ErrorEvent
+from aiogram.types import BotCommand, ErrorEvent, MenuButtonWebApp, WebAppInfo
 from dotenv import load_dotenv
 
-from config import BOT_TOKEN, REDIS_URL
-from database import close_pool, init_pool
+from config import BOT_TOKEN, REDIS_URL, WEBAPP_URL
+from database import close_pool, get_pool, init_pool
 from middlewares import AuthMiddleware
 
 import handlers.admin as admin_handlers
@@ -28,8 +30,71 @@ logging.basicConfig(level=logging.INFO)
 class IPv4Session(AiohttpSession):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # Принудительно используем IPv4 и закрываем сокеты после каждого запроса
         self._connector_init["family"] = socket.AF_INET
         self._connector_init["force_close"] = True
+
+
+async def setup_bot_ui(bot: Bot):
+    """Регистрирует список команд и синюю кнопку Web App рядом с полем ввода."""
+    commands = [
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="schedule", description="Открыть расписание"),
+        BotCommand(command="cancel", description="Отменить текущее действие"),
+    ]
+    await bot.set_my_commands(commands)
+
+    if WEBAPP_URL:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="Расписание",
+                web_app=WebAppInfo(url=WEBAPP_URL)
+            )
+        )
+
+
+async def evening_digest_worker(bot: Bot):
+    """Фоновая задача: каждый день в 20:00 по МСК рассылает сводку пар и ДЗ на завтра."""
+    tz = ZoneInfo("Europe/Moscow")
+    while True:
+        now = datetime.now(tz)
+        # Вычисляем время следующего запуска в 20:00
+        target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
+        try:
+            tomorrow = (datetime.now(tz) + timedelta(days=1)).date()
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                # Выбираем подтверждённых пользователей с выбранной группой
+                rows = await conn.fetch(
+                    """
+                    SELECT telegram_id, group_name
+                    FROM users
+                    WHERE is_approved = TRUE AND group_name IS NOT NULL
+                    """
+                )
+
+            for row in rows:
+                try:
+                    # Подставьте сюда вызов вашей функции формирования текста на завтра
+                    # text = await build_tomorrow_digest(row["group_name"], tomorrow)
+                    text = (
+                        f"📅 <b>Напоминание на завтра ({tomorrow.strftime('%d.%m')})</b>\n"
+                        f"Группа: <b>{row['group_name']}</b>\n\n"
+                        f"Актуальные пары и домашние задания уже доступны в расписании."
+                    )
+                    await bot.send_message(row["telegram_id"], text)
+                    # Небольшая пауза, чтобы не упереться в лимиты Telegram API и Worker
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logging.warning(f"Не удалось отправить сводку {row['telegram_id']}: {e}")
+        except Exception as e:
+            logging.error(f"Ошибка в фоновой задаче вечерней сводки: {e}")
 
 
 async def main():
@@ -57,10 +122,11 @@ async def main():
 
     @dp.errors()
     async def global_error_handler(event: ErrorEvent):
+        # Глушим временные сетевые сбои прокси, чтобы не засорять логи трейсбеками
         if isinstance(event.exception, (TelegramNetworkError, TelegramBadRequest)):
-            logging.warning(f"Telegram API transient error: {event.exception}")
+            logging.warning(f"Временная ошибка Telegram API: {event.exception}")
             return True
-        logging.exception("Unhandled error", exc_info=event.exception)
+        logging.exception("Необработанная ошибка", exc_info=event.exception)
         return True
 
     dp.message.middleware(AuthMiddleware())
@@ -72,10 +138,17 @@ async def main():
     dp.include_router(user_handlers.router)
 
     await bot.delete_webhook(drop_pending_updates=True)
+    await setup_bot_ui(bot)
+
+    # Запускаем фоновую задачу вечерней сводки
+    digest_task = asyncio.create_task(evening_digest_worker(bot))
+
     logging.info("Bot started")
     try:
         await dp.start_polling(bot, polling_timeout=8)
     finally:
+        # Корректно останавливаем фоновую задачу при выключении контейнера
+        digest_task.cancel()
         await storage.close()
         await close_pool()
 

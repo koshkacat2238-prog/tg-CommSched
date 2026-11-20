@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from typing import Optional
 from urllib.parse import parse_qsl
+from fastapi import FastAPI, HTTPException
+from database import get_pool
 
 import httpx
 import redis.asyncio as redis
@@ -312,3 +314,14 @@ async def get_schedule_api(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера при обработке данных")
+
+@app.get("/health")
+async def healthcheck():
+    """Проверка доступности FastAPI и подключения к PostgreSQL для Docker healthcheck."""
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return {"status": "ok"}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")

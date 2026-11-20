@@ -1,7 +1,15 @@
+# Общий блок ротации логов (не более 3 файлов по 10 МБ на каждый сервис)
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-bot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpass}
@@ -11,7 +19,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-CommSchedBot}" ]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-CommSchedBot}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -19,13 +27,14 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: [ "redis-server", "--appendonly", "yes" ]
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -33,6 +42,7 @@ services:
   bot:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     dns:
@@ -49,6 +59,7 @@ services:
   web:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     command: uvicorn webapp.main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
@@ -56,6 +67,13 @@ services:
       - .:/app
     ports:
       - "8000:8000"
+    healthcheck:
+      # Проверяем эндпоинт /health каждые 30 секунд средствами стандартного Python
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     depends_on:
       db:
         condition: service_healthy
