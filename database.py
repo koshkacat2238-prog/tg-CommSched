@@ -94,6 +94,13 @@ async def init_pool():
             await asyncio.sleep(2)
 
 
+def get_pool():
+    """Возвращает активный пул соединений PostgreSQL."""
+    # Если в вашем database.py переменная называется _pool, замените pool на _pool
+    if _pool is None:
+        raise RuntimeError("Пул базы данных ещё не инициализирован (вызовите init_pool)")
+    return _pool
+
 async def close_pool():
     if _pool:
         await _pool.close()
