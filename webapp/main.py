@@ -148,6 +148,34 @@ def _create_tg_http_client() -> httpx.AsyncClient:
     )
 
 
+async def _get_hw_target_ids(conn, group_name: str, subject: str, exclude_user_id: int) -> list[int]:
+    """Возвращает список user_id получателей уведомления по группе и предмету."""
+    recipients = await conn.fetch(
+        """
+        SELECT user_id, role, teacher_subject
+        FROM users
+        WHERE group_name = $1
+          AND is_approved = TRUE
+          AND COALESCE(is_banned, FALSE) = FALSE
+        """,
+        group_name,
+    )
+
+    target_ids = []
+    for rec in recipients:
+        if rec["user_id"] == exclude_user_id:
+            continue
+
+        role = rec["role"]
+        if role in ("student", "headman", "admin", "owner"):
+            target_ids.append(rec["user_id"])
+        elif role == "teacher":
+            if _subject_matches(rec["teacher_subject"], subject):
+                target_ids.append(rec["user_id"])
+
+    return target_ids
+
+
 # --- СТАТИЧЕСКИЕ СТРАНИЦЫ ---
 @app.get("/")
 async def read_index():
@@ -231,7 +259,6 @@ async def create_homework(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        # Очищаем возможные старые записи уведомлений по этому же уроку перед новой рассылкой
         await conn.execute(
             """
             DELETE FROM homework_notifications
@@ -242,29 +269,7 @@ async def create_homework(
             data.lesson_date,
             teacher_clean,
         )
-
-        recipients = await conn.fetch(
-            """
-            SELECT user_id, role, teacher_subject
-            FROM users
-            WHERE group_name = $1
-              AND is_approved = TRUE
-              AND COALESCE(is_banned, FALSE) = FALSE
-            """,
-            data.group_name,
-        )
-
-    target_ids = []
-    for rec in recipients:
-        if rec["user_id"] == actor_id:
-            continue
-
-        role = rec["role"]
-        if role in ("student", "headman", "admin", "owner"):
-            target_ids.append(rec["user_id"])
-        elif role == "teacher":
-            if _subject_matches(rec["teacher_subject"], data.subject):
-                target_ids.append(rec["user_id"])
+        target_ids = await _get_hw_target_ids(conn, data.group_name, data.subject, actor_id)
 
     if not target_ids:
         return {"status": "ok"}
@@ -345,66 +350,78 @@ async def update_homework_api(
 
     pool = get_pool()
     async with pool.acquire() as conn:
-        notif_rows = await conn.fetch(
+        old_notifs = await conn.fetch(
             """
-            SELECT id, chat_id, message_id
-            FROM homework_notifications
+            DELETE FROM homework_notifications
             WHERE group_name = $1 AND subject = $2 AND lesson_date = $3 AND teacher = $4
+            RETURNING chat_id, message_id
             """,
             data.group_name,
             data.subject,
             data.lesson_date,
             teacher_clean,
         )
+        target_ids = await _get_hw_target_ids(conn, data.group_name, data.subject, actor_id)
 
-    if notif_rows:
-        updated_text = _format_hw_notification(
-            group_name=data.group_name,
-            subject=data.subject,
-            description=data.description,
-            due_date=data.due_date,
-            is_edited=True,
-        )
-        records = [dict(r) for r in notif_rows]
+    old_targets = [(r["chat_id"], r["message_id"]) for r in old_notifs]
+    if not old_targets and not target_ids:
+        return {"status": "ok"}
 
-        async def edit_notifications():
-            async with _create_tg_http_client() as client:
-                for rec in records:
-                    chat_id = rec["chat_id"]
-                    message_id = rec["message_id"]
-                    try:
-                        resp = await client.post(
-                            f"{CF_API_URL}/bot{BOT_TOKEN}/editMessageText",
-                            json={
-                                "chat_id": chat_id,
-                                "message_id": message_id,
-                                "text": updated_text,
-                                "parse_mode": "HTML",
-                            },
-                        )
-                        # Если пользователь вручную удалил старое сообщение — отправляем новое и обновляем message_id
-                        if resp.status_code != 200 and "message to edit not found" in resp.text.lower():
-                            resend = await client.post(
-                                f"{CF_API_URL}/bot{BOT_TOKEN}/sendMessage",
-                                json={"chat_id": chat_id, "text": updated_text, "parse_mode": "HTML"},
+    updated_text = _format_hw_notification(
+        group_name=data.group_name,
+        subject=data.subject,
+        description=data.description,
+        due_date=data.due_date,
+        is_edited=True,
+    )
+
+    async def recreate_notifications():
+        sent_records = []
+        async with _create_tg_http_client() as client:
+            # 1. Удаляем старые уведомления в чатах, чтобы не было дублей
+            for chat_id, message_id in old_targets:
+                try:
+                    await client.post(
+                        f"{CF_API_URL}/bot{BOT_TOKEN}/deleteMessage",
+                        json={"chat_id": chat_id, "message_id": message_id},
+                    )
+                    await asyncio.sleep(0.05)
+                except Exception as exc:
+                    logger.warning("Не удалось удалить старое уведомление о ДЗ (chat=%s): %s", chat_id, exc)
+
+            # 2. Отправляем новое уведомление с пуш-оповещением
+            for uid in target_ids:
+                try:
+                    resp = await client.post(
+                        f"{CF_API_URL}/bot{BOT_TOKEN}/sendMessage",
+                        json={"chat_id": uid, "text": updated_text, "parse_mode": "HTML"},
+                    )
+                    if resp.status_code == 200:
+                        payload = resp.json()
+                        if payload.get("ok") and payload.get("result"):
+                            msg_id = payload["result"]["message_id"]
+                            sent_records.append(
+                                (data.group_name, data.subject, data.lesson_date, teacher_clean, uid, msg_id)
                             )
-                            if resend.status_code == 200:
-                                payload = resend.json()
-                                if payload.get("ok") and payload.get("result"):
-                                    new_msg_id = payload["result"]["message_id"]
-                                    db_pool = get_pool()
-                                    async with db_pool.acquire() as conn:
-                                        await conn.execute(
-                                            "UPDATE homework_notifications SET message_id = $1 WHERE id = $2",
-                                            new_msg_id,
-                                            rec["id"],
-                                        )
-                        await asyncio.sleep(0.05)
-                    except Exception as exc:
-                        logger.warning("Не удалось обновить уведомление о ДЗ (chat=%s): %s", chat_id, exc)
+                    await asyncio.sleep(0.05)
+                except Exception as exc:
+                    logger.warning("Не удалось отправить обновлённое ДЗ пользователю %s: %s", uid, exc)
 
-        asyncio.create_task(edit_notifications())
+        if sent_records:
+            try:
+                db_pool = get_pool()
+                async with db_pool.acquire() as conn:
+                    await conn.executemany(
+                        """
+                        INSERT INTO homework_notifications (group_name, subject, lesson_date, teacher, chat_id, message_id)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        sent_records,
+                    )
+            except Exception as exc:
+                logger.error("Ошибка сохранения ID обновлённых уведомлений о ДЗ в БД: %s", exc)
 
+    asyncio.create_task(recreate_notifications())
     return {"status": "ok"}
 
 
