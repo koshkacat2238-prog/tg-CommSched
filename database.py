@@ -20,7 +20,7 @@ async def init_pool():
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
                     full_name TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student','teacher','admin','owner')),
+                    role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'headman', 'teacher', 'admin', 'owner')),
                     group_name TEXT,
                     is_banned BOOLEAN NOT NULL DEFAULT FALSE,
                     is_agreed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -84,6 +84,11 @@ async def init_pool():
                 ALTER TABLE homework ADD COLUMN IF NOT EXISTS teacher TEXT NOT NULL DEFAULT '';
                 """)
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS teacher_subject TEXT;")
+                await conn.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;")
+                await conn.execute(
+                    "ALTER TABLE users ADD CONSTRAINT users_role_check "
+                    "CHECK (role IN ('student', 'headman', 'teacher', 'admin', 'owner'));"
+                )
 
             logging.info("Успешное подключение к БД и проверка схемы таблиц.")
             return

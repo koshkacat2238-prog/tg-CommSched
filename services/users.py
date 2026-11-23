@@ -1,4 +1,3 @@
-from typing import Optional
 from database import db, get_pool
 from services import audit
 from config import OWNER_ID
@@ -109,7 +108,7 @@ async def set_role(user_id: int, role: str, actor_id: int) -> None:
                 user_id,
                 role,
             )
-    await audit.log_action(actor_id, "set_role", f"user={user_id} role={role}")
+    await audit.log(actor_id, "set_role", user_id, f"role={role}")
 
 
 async def set_teacher_subject(user_id: int, subject: str, actor_id: int) -> None:
@@ -121,7 +120,7 @@ async def set_teacher_subject(user_id: int, subject: str, actor_id: int) -> None
             user_id,
             clean_subject,
         )
-    await audit.log_action(actor_id, "set_teacher_subject", f"user={user_id} subject={clean_subject}")
+    await audit.log(actor_id, "set_teacher_subject", user_id, f"subject={clean_subject}")
 
 
 async def set_group(user_id: int, group: str, actor_id: int):
