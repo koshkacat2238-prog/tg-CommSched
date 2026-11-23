@@ -122,9 +122,9 @@
 
     <script>
         const tg = window.Telegram.WebApp;
-        tg.ready();
-        tg.expand();
 
+        tg.expand();
+        tg.ready();
         const urlParams = new URLSearchParams(window.location.search);
         let groupName = urlParams.get('group') || 'МЭиТ26-8';
         const userId = tg.initDataUnsafe?.user?.id || null;

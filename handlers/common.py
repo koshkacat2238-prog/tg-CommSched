@@ -1,4 +1,5 @@
 import html
+from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
@@ -111,11 +112,13 @@ async def report_bug(cb: CallbackQuery):
 
 
 @router.callback_query(F.data == "menu:choose_group")
-async def choose_group_prompt(cb: CallbackQuery):
-    await cb.message.edit_text(
-        "Выберите вашу учебную группу из списка ниже:",
-        reply_markup=keyboards.select_group_keyboard()
-    )
+async def choose_group_prompt(cb: CallbackQuery, db_user: dict):
+    # Блокируем смену группы только привязанным преподавателям (с заполненным teacher_subject)
+    if db_user.get("teacher_subject"):
+        return await cb.answer(
+            f"Ваша учётная запись закреплена за группой {db_user.get('group_name')}.",
+            show_alert=True
+        )
     await cb.answer()
 
 

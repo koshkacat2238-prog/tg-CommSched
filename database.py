@@ -96,10 +96,11 @@ async def init_pool():
 
 def get_pool():
     """Возвращает активный пул соединений PostgreSQL."""
-    # Если в вашем database.py переменная называется _pool, замените pool на _pool
-    if _pool is None:
+    # Поддерживаем оба варианта именования глобальной переменной пула (pool или _pool)
+    active_pool = globals().get("pool") or globals().get("_pool")
+    if active_pool is None:
         raise RuntimeError("Пул базы данных ещё не инициализирован (вызовите init_pool)")
-    return _pool
+    return active_pool
 
 async def close_pool():
     if _pool:

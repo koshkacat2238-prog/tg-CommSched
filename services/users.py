@@ -1,12 +1,22 @@
 from typing import Optional
-from database import db
+from database import db, get_pool
 from services import audit
 from config import OWNER_ID
 
 
-async def get_user(user_id: int) -> Optional[dict]:
-    row = await db().fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
-    return dict(row) if row else None
+async def get_user(user_id: int) -> dict | None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT user_id, username, full_name, role, group_name,
+                   is_approved, is_banned, eng_teacher, chin_teacher, teacher_subject
+            FROM users
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        return dict(row) if row else None
 
 
 async def get_or_create_user(user_id: int, username: str | None, full_name: str) -> dict:

@@ -9,6 +9,7 @@ from handlers.states import AddSchedule, SetGroupFSM, BanFSM
 from services import users, bans, schedule, audit
 from ui import keyboards
 from ui.formatters import format_user_card
+from database import get_pool
 
 router = Router()
 
@@ -359,3 +360,51 @@ async def pending_users(cb: CallbackQuery, db_user: dict):
     kb.adjust(2)
     await cb.message.edit_text(text, reply_markup=kb.as_markup())
     await cb.answer()
+
+
+@router.message(Command("bind_teacher"))
+async def bind_teacher_cmd(message: Message, db_user: dict):
+    """Привязывает преподавателя к одной группе и предмету: /bind_teacher <tg_id> <группа> <предмет>"""
+    if db_user.get("role") not in ("admin", "owner"):
+        return
+
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) < 4:
+        return await message.answer(
+            "Использование:\n<code>/bind_teacher ID_пользователя Группа Предмет</code>\n\n"
+            "Пример:\n<code>/bind_teacher 123456789 МЭиТ26-8 Китайский</code>"
+        )
+
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        return await message.answer("ID пользователя должен быть числом.")
+
+    group_name = parts[2].strip()
+    subject = parts[3].strip()
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        updated = await conn.fetchrow(
+            """
+            UPDATE users
+            SET role = 'teacher',
+                is_approved = TRUE,
+                group_name = $2,
+                teacher_subject = $3
+            WHERE telegram_id = $1
+            RETURNING telegram_id
+            """,
+            target_id,
+            group_name,
+            subject,
+        )
+
+    if not updated:
+        return await message.answer("Пользователь с таким ID не найден в базе (он должен сначала нажать /start).")
+
+    await message.answer(
+        f"✅ Преподаватель <code>{target_id}</code> привязан:\n"
+        f"• Группа: <b>{group_name}</b>\n"
+        f"• Предмет: <b>{subject}</b>"
+    )

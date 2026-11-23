@@ -21,9 +21,9 @@ from database import close_pool, get_pool, init_pool
 from services import homework as hw_service, users as user_service
 from services.parser import fetch_schedule_from_ruz
 
+CF_API_URL = os.getenv("CF_API_URL", "https://api.telegram.org").strip().rstrip("/")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-CF_API_URL = os.getenv("CF_API_URL", "https://api.telegram.org").strip().rstrip("/")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,8 +37,9 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="webapp/static"), name="static")
 
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ АВТОРИЗАЦИИ И ПРАВ ---
 def verify_telegram_init_data(init_data: str | None) -> int | None:
-    """Проверяет подпись Telegram WebApp initData и возвращает достоверный user_id."""
+    """Проверяет подпись Telegram WebApp initData и возвращает числовой user_id."""
     if not init_data:
         raise HTTPException(status_code=401, detail="Отсутствует заголовок X-Telegram-Init-Data")
 
@@ -65,20 +66,44 @@ def verify_telegram_init_data(init_data: str | None) -> int | None:
     if not user_id:
         raise HTTPException(status_code=401, detail="В initData отсутствует id пользователя")
 
-    # Возвращаем именно числовой ID, а не весь словарь user_data
     return int(user_id)
 
 
 def resolve_actor_id(fallback_user_id: int | None, x_telegram_init_data: str | None) -> int:
     verified_id = verify_telegram_init_data(x_telegram_init_data)
-    if x_telegram_init_data and verified_id is None:
-        raise HTTPException(status_code=401, detail="Некорректная подпись Telegram initData")
     uid = verified_id or fallback_user_id
     if not uid:
         raise HTTPException(status_code=401, detail="Пользователь не авторизован")
     return uid
 
 
+def _subject_matches(teacher_subject: str | None, lesson_subject: str) -> bool:
+    """Проверяет совпадение предмета преподавателя с названием пары из расписания."""
+    if not teacher_subject:
+        return True
+    return teacher_subject.strip().lower() in (lesson_subject or "").strip().lower()
+
+
+def ensure_teacher_scope(user: dict, group_name: str, subject: str):
+    """
+    Ограничивает доступ только для привязанных преподавателей (у которых задан teacher_subject).
+    Студенты с ролью teacher (teacher_subject = None) могут добавлять ДЗ по любым предметам.
+    """
+    teacher_subject = (user.get("teacher_subject") or "").strip()
+    if not teacher_subject:
+        return
+
+    if user.get("group_name") != group_name:
+        raise HTTPException(status_code=403, detail="Вы можете управлять ДЗ только своей группы")
+
+    if not _subject_matches(teacher_subject, subject):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Вы можете управлять ДЗ только по своему предмету ({teacher_subject})"
+        )
+
+
+# --- СТАТИЧЕСКИЕ СТРАНИЦЫ ---
 @app.get("/")
 async def read_index():
     return FileResponse("webapp/static/index.html")
@@ -105,7 +130,7 @@ class UserSettings(BaseModel):
     chin_teacher: Optional[str] = None
 
 
-# --- ЭНДПОИНТЫ ---
+# --- ЭНДПОИНТЫ API ---
 @app.get("/api/role/{user_id}")
 async def get_user_role(
     user_id: int,
@@ -146,6 +171,8 @@ async def create_homework(
     ):
         raise HTTPException(status_code=403, detail="У вас нет прав на добавление ДЗ")
 
+    ensure_teacher_scope(user, data.group_name, data.subject)
+
     await hw_service.add_homework(
         subject=data.subject,
         description=data.description,
@@ -156,7 +183,29 @@ async def create_homework(
         created_by=actor_id
     )
 
-    students = await user_service.get_students_by_group(data.group_name)
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        recipients = await conn.fetch(
+            """
+            SELECT user_id, role, teacher_subject
+            FROM users
+            WHERE group_name = $1
+              AND is_approved = TRUE
+              AND COALESCE(is_banned, FALSE) = FALSE
+            """,
+            data.group_name,
+        )
+
+    target_ids = []
+    for rec in recipients:
+        if rec["user_id"] == actor_id:
+            continue
+        # Привязанным преподавателям отправляем уведомления только по их предмету
+        if rec["role"] == "teacher" and rec["teacher_subject"]:
+            if not _subject_matches(rec["teacher_subject"], data.subject):
+                continue
+        target_ids.append(rec["user_id"])
+
     text = (
         f"📚 <b>Новое ДЗ!</b>\n\n"
         f"Группа: <b>{html.escape(data.group_name)}</b>\n"
@@ -167,14 +216,13 @@ async def create_homework(
     )
 
     async def send_notifications():
-        # Используем IPv4 и отключаем keep-alive, чтобы Cloudflare Worker не обрывал соединения
         transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
         async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
-            for student in students:
+            for uid in target_ids:
                 try:
                     await client.post(
                         f"{CF_API_URL}/bot{BOT_TOKEN}/sendMessage",
-                        json={"chat_id": student["user_id"], "text": text, "parse_mode": "HTML"}
+                        json={"chat_id": uid, "text": text, "parse_mode": "HTML"}
                     )
                     await asyncio.sleep(0.05)
                 except Exception:
@@ -198,6 +246,8 @@ async def update_homework_api(
         or user["role"] not in ("teacher", "admin", "owner")
     ):
         raise HTTPException(status_code=403, detail="У вас нет прав")
+
+    ensure_teacher_scope(user, data.group_name, data.subject)
 
     await hw_service.update_homework(
         lesson_date=data.lesson_date,
@@ -230,6 +280,8 @@ async def delete_homework_api(
     ):
         raise HTTPException(status_code=403, detail="У вас нет прав")
 
+    ensure_teacher_scope(user, group_name, subject)
+
     await hw_service.delete_homework_by_lesson(lesson_date, subject, teacher, group_name, actor_id)
     return {"status": "ok"}
 
@@ -241,6 +293,17 @@ async def get_schedule_api(
     start: Optional[str] = None,
     end: Optional[str] = None
 ):
+    requester = None
+    teacher_subject_filter = None
+
+    if user_id:
+        requester = await user_service.get_user(user_id)
+        # Если это привязанный преподаватель — жёстко фиксируем его группу и предмет
+        if requester and requester.get("teacher_subject"):
+            if requester.get("group_name"):
+                group_name = requester["group_name"]
+            teacher_subject_filter = requester["teacher_subject"]
+
     if not start:
         today = date.today()
         start_date = today - timedelta(days=today.weekday())
@@ -290,28 +353,32 @@ async def get_schedule_api(
         filtered_schedule = raw_schedule
         current_settings = {"eng_teacher": None, "chin_teacher": None}
 
-        if user_id:
-            user = await user_service.get_user(user_id)
-            if user:
-                eng_t = user.get("eng_teacher")
-                chin_t = user.get("chin_teacher")
+        if requester:
+            eng_t = requester.get("eng_teacher")
+            chin_t = requester.get("chin_teacher")
 
-                current_settings["eng_teacher"] = eng_t
-                current_settings["chin_teacher"] = chin_t
+            current_settings["eng_teacher"] = eng_t
+            current_settings["chin_teacher"] = chin_t
 
-                filtered_schedule = []
-                for les in raw_schedule:
-                    subj = (les.get("subject") or "").lower()
-                    teacher = les.get("teacher") or ""
+            filtered_schedule = []
+            for les in raw_schedule:
+                subj = (les.get("subject") or "").lower()
+                teacher = les.get("teacher") or ""
 
-                    if ("иностранный" in subj or "английский" in subj) and eng_t:
-                        if eng_t.lower() not in teacher.lower():
-                            continue
-                    if "китайский" in subj and chin_t:
-                        if chin_t.lower() not in teacher.lower():
-                            continue
+                if ("иностранный" in subj or "английский" in subj) and eng_t:
+                    if eng_t.lower() not in teacher.lower():
+                        continue
+                if "китайский" in subj and chin_t:
+                    if chin_t.lower() not in teacher.lower():
+                        continue
 
-                    filtered_schedule.append(les)
+                filtered_schedule.append(les)
+
+        if teacher_subject_filter:
+            filtered_schedule = [
+                les for les in filtered_schedule
+                if _subject_matches(teacher_subject_filter, les.get("subject", ""))
+            ]
 
         return {
             "schedule": filtered_schedule,
@@ -323,6 +390,7 @@ async def get_schedule_api(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера при обработке данных")
+
 
 @app.get("/health")
 async def healthcheck():
