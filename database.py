@@ -79,6 +79,20 @@ async def init_pool():
                     created_by BIGINT NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
+                
+                CREATE TABLE IF NOT EXISTS homework_notifications (
+                    id SERIAL PRIMARY KEY,
+                    group_name TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    lesson_date TEXT NOT NULL,
+                    teacher TEXT NOT NULL DEFAULT '',
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_hw_notif_lookup
+                ON homework_notifications (group_name, subject, lesson_date, teacher);
 
                 ALTER TABLE homework ADD COLUMN IF NOT EXISTS lesson_date TEXT NOT NULL DEFAULT '';
                 ALTER TABLE homework ADD COLUMN IF NOT EXISTS teacher TEXT NOT NULL DEFAULT '';

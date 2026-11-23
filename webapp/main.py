@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
@@ -20,6 +21,8 @@ from config import BOT_TOKEN, REDIS_URL
 from database import close_pool, get_pool, init_pool
 from services import homework as hw_service, users as user_service
 from services.parser import fetch_schedule_from_ruz
+
+logger = logging.getLogger(__name__)
 
 CF_API_URL = os.getenv("CF_API_URL", "https://api.telegram.org").strip().rstrip("/")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -116,6 +119,35 @@ def ensure_teacher_scope(user: dict, group_name: str, subject: str):
         )
 
 
+def _format_hw_notification(
+    group_name: str,
+    subject: str,
+    description: str,
+    due_date: str,
+    is_edited: bool = False,
+) -> str:
+    """Формирует текст уведомления о новом или обновлённом ДЗ."""
+    header = "✏️ <b>ДЗ обновлено!</b>" if is_edited else "📚 <b>Новое ДЗ!</b>"
+    return (
+        f"{header}\n\n"
+        f"Группа: <b>{html.escape(group_name)}</b>\n"
+        f"Предмет: <b>{html.escape(subject)}</b>\n"
+        f"Задание: {html.escape(description)}\n"
+        f"Дедлайн: <code>{html.escape(due_date)}</code>\n\n"
+        f"Посмотреть в расписании: /start"
+    )
+
+
+def _create_tg_http_client() -> httpx.AsyncClient:
+    """Создаёт HTTP-клиент для работы через Cloudflare Worker по IPv4 без зависаний keep-alive."""
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+    return httpx.AsyncClient(
+        timeout=10.0,
+        transport=transport,
+        headers={"Connection": "close"},
+    )
+
+
 # --- СТАТИЧЕСКИЕ СТРАНИЦЫ ---
 @app.get("/")
 async def read_index():
@@ -185,6 +217,7 @@ async def create_homework(
         raise HTTPException(status_code=403, detail="У вас нет прав на добавление ДЗ")
 
     ensure_teacher_scope(user, data.group_name, data.subject)
+    teacher_clean = (data.teacher or "").strip()
 
     await hw_service.add_homework(
         subject=data.subject,
@@ -198,6 +231,18 @@ async def create_homework(
 
     pool = get_pool()
     async with pool.acquire() as conn:
+        # Очищаем возможные старые записи уведомлений по этому же уроку перед новой рассылкой
+        await conn.execute(
+            """
+            DELETE FROM homework_notifications
+            WHERE group_name = $1 AND subject = $2 AND lesson_date = $3 AND teacher = $4
+            """,
+            data.group_name,
+            data.subject,
+            data.lesson_date,
+            teacher_clean,
+        )
+
         recipients = await conn.fetch(
             """
             SELECT user_id, role, teacher_subject
@@ -211,40 +256,60 @@ async def create_homework(
 
     target_ids = []
     for rec in recipients:
-        # Автору созданного ДЗ уведомление не отправляем
         if rec["user_id"] == actor_id:
             continue
 
         role = rec["role"]
-        # Студенты, старосты, админы и владельцы получают уведомления по всем предметам группы
         if role in ("student", "headman", "admin", "owner"):
             target_ids.append(rec["user_id"])
-        # Учителя получают уведомления ТОЛЬКО если совпадает их предмет
         elif role == "teacher":
             if _subject_matches(rec["teacher_subject"], data.subject):
                 target_ids.append(rec["user_id"])
 
-    text = (
-        f"📚 <b>Новое ДЗ!</b>\n\n"
-        f"Группа: <b>{html.escape(data.group_name)}</b>\n"
-        f"Предмет: <b>{html.escape(data.subject)}</b>\n"
-        f"Задание: {html.escape(data.description)}\n"
-        f"Дедлайн: <code>{html.escape(data.due_date)}</code>\n\n"
-        f"Посмотреть в расписании: /start"
+    if not target_ids:
+        return {"status": "ok"}
+
+    text = _format_hw_notification(
+        group_name=data.group_name,
+        subject=data.subject,
+        description=data.description,
+        due_date=data.due_date,
+        is_edited=False,
     )
 
     async def send_notifications():
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
+        sent_records = []
+        async with _create_tg_http_client() as client:
             for uid in target_ids:
                 try:
-                    await client.post(
+                    resp = await client.post(
                         f"{CF_API_URL}/bot{BOT_TOKEN}/sendMessage",
                         json={"chat_id": uid, "text": text, "parse_mode": "HTML"}
                     )
+                    if resp.status_code == 200:
+                        payload = resp.json()
+                        if payload.get("ok") and payload.get("result"):
+                            msg_id = payload["result"]["message_id"]
+                            sent_records.append(
+                                (data.group_name, data.subject, data.lesson_date, teacher_clean, uid, msg_id)
+                            )
                     await asyncio.sleep(0.05)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Не удалось отправить уведомление о ДЗ пользователю %s: %s", uid, exc)
+
+        if sent_records:
+            try:
+                db_pool = get_pool()
+                async with db_pool.acquire() as conn:
+                    await conn.executemany(
+                        """
+                        INSERT INTO homework_notifications (group_name, subject, lesson_date, teacher, chat_id, message_id)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        sent_records,
+                    )
+            except Exception as exc:
+                logger.error("Ошибка сохранения ID уведомлений о ДЗ в БД: %s", exc)
 
     asyncio.create_task(send_notifications())
     return {"status": "ok"}
@@ -266,6 +331,7 @@ async def update_homework_api(
         raise HTTPException(status_code=403, detail="У вас нет прав")
 
     ensure_teacher_scope(user, data.group_name, data.subject)
+    teacher_clean = (data.teacher or "").strip()
 
     await hw_service.update_homework(
         lesson_date=data.lesson_date,
@@ -276,6 +342,69 @@ async def update_homework_api(
         new_due_date=data.due_date,
         actor_id=actor_id
     )
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        notif_rows = await conn.fetch(
+            """
+            SELECT id, chat_id, message_id
+            FROM homework_notifications
+            WHERE group_name = $1 AND subject = $2 AND lesson_date = $3 AND teacher = $4
+            """,
+            data.group_name,
+            data.subject,
+            data.lesson_date,
+            teacher_clean,
+        )
+
+    if notif_rows:
+        updated_text = _format_hw_notification(
+            group_name=data.group_name,
+            subject=data.subject,
+            description=data.description,
+            due_date=data.due_date,
+            is_edited=True,
+        )
+        records = [dict(r) for r in notif_rows]
+
+        async def edit_notifications():
+            async with _create_tg_http_client() as client:
+                for rec in records:
+                    chat_id = rec["chat_id"]
+                    message_id = rec["message_id"]
+                    try:
+                        resp = await client.post(
+                            f"{CF_API_URL}/bot{BOT_TOKEN}/editMessageText",
+                            json={
+                                "chat_id": chat_id,
+                                "message_id": message_id,
+                                "text": updated_text,
+                                "parse_mode": "HTML",
+                            },
+                        )
+                        # Если пользователь вручную удалил старое сообщение — отправляем новое и обновляем message_id
+                        if resp.status_code != 200 and "message to edit not found" in resp.text.lower():
+                            resend = await client.post(
+                                f"{CF_API_URL}/bot{BOT_TOKEN}/sendMessage",
+                                json={"chat_id": chat_id, "text": updated_text, "parse_mode": "HTML"},
+                            )
+                            if resend.status_code == 200:
+                                payload = resend.json()
+                                if payload.get("ok") and payload.get("result"):
+                                    new_msg_id = payload["result"]["message_id"]
+                                    db_pool = get_pool()
+                                    async with db_pool.acquire() as conn:
+                                        await conn.execute(
+                                            "UPDATE homework_notifications SET message_id = $1 WHERE id = $2",
+                                            new_msg_id,
+                                            rec["id"],
+                                        )
+                        await asyncio.sleep(0.05)
+                    except Exception as exc:
+                        logger.warning("Не удалось обновить уведомление о ДЗ (chat=%s): %s", chat_id, exc)
+
+        asyncio.create_task(edit_notifications())
+
     return {"status": "ok"}
 
 
@@ -299,8 +428,41 @@ async def delete_homework_api(
         raise HTTPException(status_code=403, detail="У вас нет прав")
 
     ensure_teacher_scope(user, group_name, subject)
+    teacher_clean = (teacher or "").strip()
 
     await hw_service.delete_homework_by_lesson(lesson_date, subject, teacher, group_name, actor_id)
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        deleted_rows = await conn.fetch(
+            """
+            DELETE FROM homework_notifications
+            WHERE group_name = $1 AND subject = $2 AND lesson_date = $3 AND teacher = $4
+            RETURNING chat_id, message_id
+            """,
+            group_name,
+            subject,
+            lesson_date,
+            teacher_clean,
+        )
+
+    if deleted_rows:
+        targets = [(r["chat_id"], r["message_id"]) for r in deleted_rows]
+
+        async def delete_notifications():
+            async with _create_tg_http_client() as client:
+                for chat_id, message_id in targets:
+                    try:
+                        await client.post(
+                            f"{CF_API_URL}/bot{BOT_TOKEN}/deleteMessage",
+                            json={"chat_id": chat_id, "message_id": message_id},
+                        )
+                        await asyncio.sleep(0.05)
+                    except Exception as exc:
+                        logger.warning("Не удалось удалить уведомление о ДЗ (chat=%s): %s", chat_id, exc)
+
+        asyncio.create_task(delete_notifications())
+
     return {"status": "ok"}
 
 
@@ -316,7 +478,6 @@ async def get_schedule_api(
 
     if user_id:
         requester = await user_service.get_user(user_id)
-        # Для роли teacher жёстко фиксируем закреплённую группу и предмет
         if requester and requester.get("role") == "teacher":
             if requester.get("group_name"):
                 group_name = requester["group_name"]
