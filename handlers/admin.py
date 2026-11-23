@@ -1,17 +1,29 @@
 import html
-from aiogram import F, Router, Bot
+
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 from config import ADMIN_ROLES
-from handlers.states import AddSchedule, SetGroupFSM, BanFSM
-from services import users, bans, schedule, audit
+from database import get_pool
+from handlers.states import AddSchedule, BanFSM, SetGroupFSM, SetSubjectFSM
+from services import audit, bans, schedule, users
 from ui import keyboards
 from ui.formatters import format_user_card
-from database import get_pool
 
 router = Router()
+
+
+def _build_user_card_text(u: dict) -> str:
+    """Формирует текст карточки пользователя и дописывает предмет, если роль — teacher."""
+    text = format_user_card(u)
+    if u.get("role") == "teacher":
+        subj = html.escape(u.get("teacher_subject") or "не задан")
+        text += f"\n📚 Предмет: <b>{subj}</b>"
+    return text
 
 
 @router.message(Command("cancel"), StateFilter("*"))
@@ -24,7 +36,8 @@ async def cancel_any(message: Message, state: FSMContext, db_user: dict):
 @router.callback_query(F.data == "menu:users")
 async def users_group_list(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     await state.clear()
 
     groups = await users.get_groups_with_users()
@@ -37,14 +50,19 @@ async def users_group_list(cb: CallbackQuery, db_user: dict, state: FSMContext):
     kb.button(text="⬅️ В меню", callback_data="menu:main")
     kb.adjust(2, 1, 1)
 
-    await cb.message.edit_text("👥 Выберите группу для просмотра:", reply_markup=kb.as_markup())
+    if isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text("👥 Выберите группу для просмотра:", reply_markup=kb.as_markup())
+        except TelegramBadRequest:
+            pass
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:grp:"))
 async def users_in_group(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     group_name = cb.data.split(":", 2)[2]
     users_list = await users.list_users_by_group(group_name)
 
@@ -57,63 +75,152 @@ async def users_in_group(cb: CallbackQuery, db_user: dict):
     kb.adjust(1)
 
     display_name = "Без группы" if group_name == "None" else html.escape(group_name)
-    await cb.message.edit_text(f"👥 Пользователи в группе <b>{display_name}</b>:", reply_markup=kb.as_markup())
+    if isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text(f"👥 Пользователи в группе <b>{display_name}</b>:", reply_markup=kb.as_markup())
+        except TelegramBadRequest:
+            pass
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:card:"))
 async def user_card_view(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
-    await state.clear()  # Сбрасываем FSM, если админ нажал "Отмена" при бане
+        await cb.answer("Нет прав", show_alert=True)
+        return
+    await state.clear()
     uid = int(cb.data.split(":")[2])
     u = await users.get_user(uid)
     if not u:
-        return await cb.answer("Пользователь не найден", show_alert=True)
-    await cb.message.edit_text(format_user_card(u), reply_markup=keyboards.user_card(uid, bool(u["is_banned"])))
+        await cb.answer("Пользователь не найден", show_alert=True)
+        return
+    if isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text(
+                _build_user_card_text(u),
+                reply_markup=keyboards.user_card(uid, bool(u["is_banned"]), u["role"])
+            )
+        except TelegramBadRequest:
+            pass
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:role:"))
 async def user_role_menu(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     uid = int(cb.data.split(":")[2])
     target = await users.get_user(uid)
     if not users.can_manage(db_user, target):
-        return await cb.answer("Нельзя изменить этого пользователя", show_alert=True)
-    await cb.message.edit_text("Выберите роль:", reply_markup=keyboards.roles_keyboard(uid, db_user["role"]))
+        await cb.answer("Нельзя изменить этого пользователя", show_alert=True)
+        return
+    if isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text("Выберите роль:", reply_markup=keyboards.roles_keyboard(uid, db_user["role"]))
+        except TelegramBadRequest:
+            pass
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:setrole:"))
-async def user_set_role(cb: CallbackQuery, db_user: dict):
+async def user_set_role(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     _, _, uid_s, role = cb.data.split(":")
     uid = int(uid_s)
     target = await users.get_user(uid)
     if not users.can_manage(db_user, target, new_role=role):
-        return await cb.answer("Недостаточно прав для назначения этой роли", show_alert=True)
+        await cb.answer("Недостаточно прав для назначения этой роли", show_alert=True)
+        return
     await users.set_role(uid, role, db_user["user_id"])
     await cb.answer("Роль изменена")
+
+    u = await users.get_user(uid)
+    if u and isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text(
+                _build_user_card_text(u),
+                reply_markup=keyboards.user_card(uid, bool(u["is_banned"]), u["role"])
+            )
+        except TelegramBadRequest:
+            pass
+
+        # Если назначена роль учителя — сразу предлагаем указать его предмет
+        if role == "teacher":
+            await state.update_data(target_uid=uid)
+            await state.set_state(SetSubjectFSM.waiting)
+            await cb.message.answer(
+                "📚 Введите предмет для этого учителя (например: <code>Китайский</code>), "
+                "чтобы он получал уведомления и видел пары только по нему (или <code>-</code>, /cancel):"
+            )
+
+
+# --- Назначение предмета учителя ---
+@router.callback_query(F.data.startswith("usr:subject:"))
+async def user_subject_prompt(cb: CallbackQuery, db_user: dict, state: FSMContext):
+    if db_user["role"] not in ADMIN_ROLES:
+        await cb.answer("Недостаточно прав", show_alert=True)
+        return
+
+    uid = int(cb.data.split(":")[2])
+    target = await users.get_user(uid)
+    if not users.can_manage(db_user, target):
+        await cb.answer("Нельзя изменить этого пользователя", show_alert=True)
+        return
+
+    await state.update_data(target_uid=uid)
+    await state.set_state(SetSubjectFSM.waiting)
+
+    if isinstance(cb.message, Message):
+        await cb.message.answer(
+            "📚 Введите название предмета для учителя (например: <code>Китайский</code>), "
+            "или <code>-</code> чтобы очистить (/cancel для отмены):"
+        )
+    await cb.answer()
+
+
+@router.message(SetSubjectFSM.waiting, F.text)
+async def user_subject_input(message: Message, db_user: dict, state: FSMContext):
+    data = await state.get_data()
+    uid = data["target_uid"]
+    subject = message.text.strip()
+    if subject == "-":
+        subject = ""
+
+    await users.set_teacher_subject(uid, subject, db_user["user_id"])
+    await state.clear()
+
     u = await users.get_user(uid)
     if u:
-        await cb.message.edit_text(format_user_card(u), reply_markup=keyboards.user_card(uid, bool(u["is_banned"])))
+        await message.answer(
+            f"✅ Предмет учителя обновлён: <b>{html.escape(subject) or 'не задан'}</b>\n\n"
+            f"{_build_user_card_text(u)}",
+            reply_markup=keyboards.user_card(uid, bool(u["is_banned"]), u["role"]),
+        )
+    else:
+        await message.answer(
+            f"✅ Предмет обновлён: <b>{html.escape(subject) or 'не задан'}</b>",
+            reply_markup=keyboards.main_menu(db_user["role"]),
+        )
 
 
 # --- Баны ---
 @router.callback_query(F.data.startswith("usr:ban:"))
 async def ban_start(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     uid = int(cb.data.split(":")[2])
     target = await users.get_user(uid)
-    if not users.can_manage(db_user, target):
-        return await cb.answer("Нельзя забанить этого пользователя", show_alert=True)
+    if not target or not users.can_manage(db_user, target):
+        await cb.answer("Нельзя забанить этого пользователя", show_alert=True)
+        return
     await state.update_data(target_uid=uid)
     await state.set_state(BanFSM.reason)
-    await cb.message.answer(f"Причина бана <b>{html.escape(target['full_name'])}</b> (или /cancel):")
+    if isinstance(cb.message, Message):
+        await cb.message.answer(f"Причина бана <b>{html.escape(target['full_name'])}</b> (или /cancel):")
     await cb.answer()
 
 
@@ -127,39 +234,47 @@ async def ban_reason(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("usr:doBan:"))
 async def ban_apply(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     _, _, uid_s, days_s = cb.data.split(":")
     uid, days = int(uid_s), int(days_s)
     target = await users.get_user(uid)
     if not users.can_manage(db_user, target):
-        return await cb.answer("Нельзя забанить этого пользователя", show_alert=True)
+        await cb.answer("Нельзя забанить этого пользователя", show_alert=True)
+        return
     data = await state.get_data()
     await bans.ban_user(uid, db_user["user_id"], data.get("reason", "Без причины"), days if days > 0 else None)
     await state.clear()
-    await cb.message.edit_text("🚫 Пользователь забанен.", reply_markup=keyboards.back_to_menu())
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text("🚫 Пользователь забанен.", reply_markup=keyboards.back_to_menu())
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:unban:"))
 async def user_unban(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     uid = int(cb.data.split(":")[2])
     await bans.unban_user(uid, db_user["user_id"], "Ручной разбан админом")
     await cb.answer("✅ Пользователь разбанен", show_alert=True)
 
     u = await users.get_user(uid)
-    if u:
-        await cb.message.edit_text(
-            format_user_card(u),
-            reply_markup=keyboards.user_card(uid, bool(u["is_banned"]))
-        )
+    if u and isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text(
+                _build_user_card_text(u),
+                reply_markup=keyboards.user_card(uid, bool(u["is_banned"]), u["role"])
+            )
+        except TelegramBadRequest:
+            pass
 
 
 @router.callback_query(F.data == "menu:bans")
 async def active_bans(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     bans_list = await bans.list_active_bans()
     text = "✅ Активных банов нет." if not bans_list else "🚫 <b>Активные баны:</b>\n\n"
     for b in bans_list:
@@ -167,7 +282,8 @@ async def active_bans(cb: CallbackQuery, db_user: dict):
         reason = html.escape(b.get("reason") or "—")
         exp = b["expires_at"].strftime("%Y-%m-%d %H:%M") if b["expires_at"] else "навсегда"
         text += f"• {full_name} (ID <code>{b['user_id']}</code>) до {exp}. Причина: {reason}\n"
-    await cb.message.edit_text(text, reply_markup=keyboards.back_to_menu())
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text(text, reply_markup=keyboards.back_to_menu())
     await cb.answer()
 
 
@@ -175,14 +291,16 @@ async def active_bans(cb: CallbackQuery, db_user: dict):
 @router.callback_query(F.data == "menu:logs")
 async def logs_menu(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     logs = await audit.get_logs(20)
     lines = ["📜 <b>Логи:</b>\n"]
     for l in logs:
         action = html.escape(l["action"] or "")
         details = html.escape(l["details"] or "")
         lines.append(f"• {l['created_at'].strftime('%m-%d %H:%M')} {action} (ID {l['actor_id']}) {details}")
-    await cb.message.edit_text("\n".join(lines), reply_markup=keyboards.back_to_menu())
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text("\n".join(lines), reply_markup=keyboards.back_to_menu())
     await cb.answer()
 
 
@@ -190,9 +308,11 @@ async def logs_menu(cb: CallbackQuery, db_user: dict):
 @router.callback_query(F.data == "menu:add_schedule")
 async def add_sched_start(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
     await state.set_state(AddSchedule.group)
-    await cb.message.edit_text("Шаг 1/8. Введите название группы (например, МЭиТ26-8):")
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text("Шаг 1/8. Введите название группы (например, МЭиТ26-8):")
     await cb.answer()
 
 
@@ -209,7 +329,8 @@ async def add_sched_day(message: Message, state: FSMContext):
         d = int(message.text.strip())
         assert 1 <= d <= 7
     except Exception:
-        return await message.answer("Ошибка! Введите число от 1 до 7:")
+        await message.answer("Ошибка! Введите число от 1 до 7:")
+        return
 
     await state.update_data(day=d - 1)
     await state.set_state(AddSchedule.time_start)
@@ -278,13 +399,15 @@ async def add_sched_room(message: Message, state: FSMContext, db_user: dict):
 @router.callback_query(F.data.startswith("usr:group:"))
 async def user_group_prompt(cb: CallbackQuery, db_user: dict, state: FSMContext):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Недостаточно прав", show_alert=True)
+        await cb.answer("Недостаточно прав", show_alert=True)
+        return
 
     uid = int(cb.data.split(":")[2])
     await state.update_data(target_uid=uid)
     await state.set_state(SetGroupFSM.waiting)
 
-    await cb.message.answer("Введите название группы (или '-' чтобы очистить, /cancel для отмены):")
+    if isinstance(cb.message, Message):
+        await cb.message.answer("Введите название группы (или '-' чтобы очистить, /cancel для отмены):")
     await cb.answer()
 
 
@@ -308,12 +431,14 @@ async def user_group_input(message: Message, db_user: dict, state: FSMContext):
 @router.callback_query(F.data.startswith("mod:approve:"))
 async def approve_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
 
     uid = int(cb.data.split(":")[2])
     await users.approve_user(uid, db_user["user_id"])
 
-    await cb.message.edit_text(f"✅ Пользователь <code>{uid}</code> одобрен.")
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text(f"✅ Пользователь <code>{uid}</code> одобрен.")
     await cb.answer()
     try:
         await bot.send_message(uid, "✅ <b>Ваша заявка одобрена!</b>\nНажмите /start, чтобы войти.")
@@ -324,12 +449,14 @@ async def approve_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
 @router.callback_query(F.data.startswith("mod:reject:"))
 async def reject_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
 
     uid = int(cb.data.split(":")[2])
     await users.reject_user(uid, db_user["user_id"])
 
-    await cb.message.edit_text(f"❌ Пользователь <code>{uid}</code> отклонен и удален.")
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text(f"❌ Пользователь <code>{uid}</code> отклонен и удален.")
     await cb.answer()
     try:
         await bot.send_message(uid, "❌ <b>Ваша заявка отклонена.</b>\nВы не можете пользоваться этим ботом.")
@@ -340,12 +467,15 @@ async def reject_user_handler(cb: CallbackQuery, db_user: dict, bot: Bot):
 @router.callback_query(F.data == "menu:pending")
 async def pending_users(cb: CallbackQuery, db_user: dict):
     if db_user["role"] not in ADMIN_ROLES:
-        return await cb.answer("Нет прав", show_alert=True)
+        await cb.answer("Нет прав", show_alert=True)
+        return
 
     rows = await users.list_pending_users()
     if not rows:
-        await cb.message.edit_text("✅ Нет новых заявок.", reply_markup=keyboards.back_to_menu())
-        return await cb.answer()
+        if isinstance(cb.message, Message):
+            await cb.message.edit_text("✅ Нет новых заявок.", reply_markup=keyboards.back_to_menu())
+        await cb.answer()
+        return
 
     text = "⏳ <b>Пользователи на модерации:</b>\n\n"
     kb = InlineKeyboardBuilder()
@@ -358,27 +488,30 @@ async def pending_users(cb: CallbackQuery, db_user: dict):
 
     kb.button(text="⬅️ В меню", callback_data="menu:main")
     kb.adjust(2)
-    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    if isinstance(cb.message, Message):
+        await cb.message.edit_text(text, reply_markup=kb.as_markup())
     await cb.answer()
 
 
 @router.message(Command("bind_teacher"))
 async def bind_teacher_cmd(message: Message, db_user: dict):
-    """Привязывает преподавателя к одной группе и предмету: /bind_teacher <tg_id> <группа> <предмет>"""
+    """Быстрая привязка учителя к группе и предмету: /bind_teacher <user_id> <группа> <предмет>"""
     if db_user.get("role") not in ("admin", "owner"):
         return
 
     parts = (message.text or "").split(maxsplit=3)
     if len(parts) < 4:
-        return await message.answer(
+        await message.answer(
             "Использование:\n<code>/bind_teacher ID_пользователя Группа Предмет</code>\n\n"
             "Пример:\n<code>/bind_teacher 123456789 МЭиТ26-8 Китайский</code>"
         )
+        return
 
     try:
         target_id = int(parts[1])
     except ValueError:
-        return await message.answer("ID пользователя должен быть числом.")
+        await message.answer("ID пользователя должен быть числом.")
+        return
 
     group_name = parts[2].strip()
     subject = parts[3].strip()
@@ -392,8 +525,8 @@ async def bind_teacher_cmd(message: Message, db_user: dict):
                 is_approved = TRUE,
                 group_name = $2,
                 teacher_subject = $3
-            WHERE telegram_id = $1
-            RETURNING telegram_id
+            WHERE user_id = $1
+            RETURNING user_id
             """,
             target_id,
             group_name,
@@ -401,10 +534,11 @@ async def bind_teacher_cmd(message: Message, db_user: dict):
         )
 
     if not updated:
-        return await message.answer("Пользователь с таким ID не найден в базе (он должен сначала нажать /start).")
+        await message.answer("Пользователь с таким ID не найден в базе (он должен сначала нажать /start).")
+        return
 
     await message.answer(
-        f"✅ Преподаватель <code>{target_id}</code> привязан:\n"
-        f"• Группа: <b>{group_name}</b>\n"
-        f"• Предмет: <b>{subject}</b>"
+        f"✅ Учитель <code>{target_id}</code> привязан:\n"
+        f"• Группа: <b>{html.escape(group_name)}</b>\n"
+        f"• Предмет: <b>{html.escape(subject)}</b>"
     )

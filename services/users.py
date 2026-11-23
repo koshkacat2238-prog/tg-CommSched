@@ -3,6 +3,8 @@ from database import db, get_pool
 from services import audit
 from config import OWNER_ID
 
+VALID_ROLES = ("student", "headman", "teacher", "admin", "owner")
+
 
 async def get_user(user_id: int) -> dict | None:
     pool = get_pool()
@@ -79,23 +81,47 @@ async def list_users(limit: int = 30) -> list[dict]:
 def can_manage(actor: dict | None, target: dict | None, new_role: str | None = None) -> bool:
     if not actor or not target:
         return False
+    if new_role is not None and new_role not in VALID_ROLES:
+        return False
     if actor["user_id"] == target["user_id"]:
         return False
     if actor["role"] == "owner" and target["role"] != "owner":
         return new_role != "owner"
     if actor["role"] == "admin" and target["role"] not in ("admin", "owner"):
-        # Обычный админ не может назначать админов или владельцев
         if new_role in ("admin", "owner"):
             return False
         return True
     return False
 
 
-async def set_role(user_id: int, role: str, actor_id: int):
-    async with db().acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("UPDATE users SET role=$1 WHERE user_id=$2", role, user_id)
-            await audit.log(actor_id, "set_role", user_id, f"role={role}", conn=conn)
+async def set_role(user_id: int, role: str, actor_id: int) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if role != "teacher":
+            await conn.execute(
+                "UPDATE users SET role = $2, teacher_subject = NULL WHERE user_id = $1",
+                user_id,
+                role,
+            )
+        else:
+            await conn.execute(
+                "UPDATE users SET role = $2 WHERE user_id = $1",
+                user_id,
+                role,
+            )
+    await audit.log_action(actor_id, "set_role", f"user={user_id} role={role}")
+
+
+async def set_teacher_subject(user_id: int, subject: str, actor_id: int) -> None:
+    pool = get_pool()
+    clean_subject = subject.strip() or None
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET teacher_subject = $2 WHERE user_id = $1",
+            user_id,
+            clean_subject,
+        )
+    await audit.log_action(actor_id, "set_teacher_subject", f"user={user_id} subject={clean_subject}")
 
 
 async def set_group(user_id: int, group: str, actor_id: int):
@@ -144,3 +170,39 @@ async def get_students_by_group(group_name: str) -> list[dict]:
 
 async def agree_to_privacy(user_id: int):
     await db().execute("UPDATE users SET is_agreed = TRUE WHERE user_id = $1", user_id)
+
+
+async def set_user_role(user_id: int, role: str) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        # Если роль больше не teacher — очищаем привязку к предмету
+        if role != "teacher":
+            await conn.execute(
+                "UPDATE users SET role = $2, teacher_subject = NULL WHERE user_id = $1",
+                user_id,
+                role,
+            )
+        else:
+            await conn.execute(
+                "UPDATE users SET role = $2 WHERE user_id = $1",
+                user_id,
+                role,
+            )
+
+
+async def set_teacher_profile(user_id: int, group_name: str, subject: str) -> None:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET role = 'teacher',
+                is_approved = TRUE,
+                group_name = $2,
+                teacher_subject = $3
+            WHERE user_id = $1
+            """,
+            user_id,
+            group_name,
+            subject,
+        )

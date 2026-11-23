@@ -27,26 +27,42 @@ def back_to_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def user_card(user_id: int, is_banned: bool) -> InlineKeyboardMarkup:
+def user_card(user_id: int, is_banned: bool, role: str = "student") -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Роль", callback_data=f"usr:role:{user_id}")
     kb.button(text="📁 Группа", callback_data=f"usr:group:{user_id}")
+    if role == "teacher":
+        kb.button(text="📚 Предмет", callback_data=f"usr:subject:{user_id}")
     if is_banned:
         kb.button(text="✅ Разбанить", callback_data=f"usr:unban:{user_id}")
     else:
         kb.button(text="🚫 Забанить", callback_data=f"usr:ban:{user_id}")
     kb.button(text="⬅️ К списку", callback_data="menu:users")
-    kb.adjust(2, 2, 1)
+
+    if role == "teacher":
+        kb.adjust(2, 2, 1)
+    else:
+        kb.adjust(2, 1, 1)
     return kb.as_markup()
 
 
 def roles_keyboard(user_id: int, actor_role: str = "admin") -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    available_roles = ("student", "teacher", "admin") if actor_role == "owner" else ("student", "teacher")
+    role_labels = {
+        "student": "🎓 Студент",
+        "headman": "⭐ Староста",
+        "teacher": "👨‍🏫 Учитель",
+        "admin": "🛡 Админ",
+    }
+    available_roles = (
+        ("student", "headman", "teacher", "admin")
+        if actor_role == "owner"
+        else ("student", "headman", "teacher")
+    )
     for r in available_roles:
-        kb.button(text=r, callback_data=f"usr:setrole:{user_id}:{r}")
+        kb.button(text=role_labels[r], callback_data=f"usr:setrole:{user_id}:{r}")
     kb.button(text="⬅️ Отмена", callback_data=f"usr:card:{user_id}")
-    kb.adjust(len(available_roles), 1)
+    kb.adjust(2)
     return kb.as_markup()
 
 

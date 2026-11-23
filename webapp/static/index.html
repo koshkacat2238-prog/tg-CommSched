@@ -122,9 +122,9 @@
 
     <script>
         const tg = window.Telegram.WebApp;
-
         tg.expand();
         tg.ready();
+
         const urlParams = new URLSearchParams(window.location.search);
         let groupName = urlParams.get('group') || 'МЭиТ26-8';
         const userId = tg.initDataUnsafe?.user?.id || null;
@@ -134,7 +134,7 @@
 
         let currentDate = new Date();
         let currentFocusDate = null;
-        let isTeacher = false;
+        let canManageHw = false;
         let availableTeachers = { eng: [], chin: [] };
         let userSettings = { eng_teacher: "", chin_teacher: "" };
 
@@ -168,7 +168,10 @@
                 if (!res.ok) return;
                 const data = await res.json();
 
-                if (["teacher", "admin", "owner"].includes(data.role)) isTeacher = true;
+                // Право добавлять/редактировать ДЗ есть у старосты (headman), учителя, админа и владельца
+                if (["headman", "teacher", "admin", "owner"].includes(data.role)) {
+                    canManageHw = true;
+                }
 
                 if (data.group_name && data.group_name !== groupName) {
                     groupName = data.group_name;
@@ -423,7 +426,7 @@
                         let hwText = '—';
                         if (hw) {
                             hwText = `<span class="hw">${escapeHtml(hw.description)}</span>`;
-                            if (isTeacher) {
+                            if (canManageHw) {
                                 const safeSub = encodeURIComponent(les.subject || '');
                                 const safeTeach = encodeURIComponent(les.teacher || '');
                                 const safeDesc = encodeURIComponent(hw.description || '');
@@ -434,7 +437,7 @@
                                     <button class="btn-icon del-hw-btn" data-date="${safeDateAttr}" data-subject="${safeSub}" data-teacher="${safeTeach}" style="width:28px; height:28px; font-size:14px; display:inline-flex; background:transparent; color:#ff5252;" title="Удалить">🗑</button>
                                 </div>`;
                             }
-                        } else if (isTeacher) {
+                        } else if (canManageHw) {
                             const safeSubject = encodeURIComponent(les.subject || '');
                             const safeTeach = encodeURIComponent(les.teacher || '');
                             const safeDateAttr = escapeHtml(les.date || '');

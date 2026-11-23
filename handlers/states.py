@@ -13,5 +13,8 @@ class AddSchedule(StatesGroup):
 class SetGroupFSM(StatesGroup):
     waiting = State()
 
+class SetSubjectFSM(StatesGroup):
+    waiting = State()
+
 class BanFSM(StatesGroup):
     reason = State()

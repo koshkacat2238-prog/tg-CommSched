@@ -83,6 +83,7 @@ async def init_pool():
                 ALTER TABLE homework ADD COLUMN IF NOT EXISTS lesson_date TEXT NOT NULL DEFAULT '';
                 ALTER TABLE homework ADD COLUMN IF NOT EXISTS teacher TEXT NOT NULL DEFAULT '';
                 """)
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS teacher_subject TEXT;")
 
             logging.info("Успешное подключение к БД и проверка схемы таблиц.")
             return

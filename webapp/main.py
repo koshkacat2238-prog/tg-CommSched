@@ -24,6 +24,9 @@ from services.parser import fetch_schedule_from_ruz
 CF_API_URL = os.getenv("CF_API_URL", "https://api.telegram.org").strip().rstrip("/")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
+# Роли, имеющие право добавлять, редактировать и удалять ДЗ
+HW_MANAGER_ROLES = ("headman", "teacher", "admin", "owner")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -78,22 +81,32 @@ def resolve_actor_id(fallback_user_id: int | None, x_telegram_init_data: str | N
 
 
 def _subject_matches(teacher_subject: str | None, lesson_subject: str) -> bool:
-    """Проверяет совпадение предмета преподавателя с названием пары из расписания."""
+    """Проверяет совпадение предмета учителя с названием предмета из расписания."""
     if not teacher_subject:
-        return True
-    return teacher_subject.strip().lower() in (lesson_subject or "").strip().lower()
+        return False
+    t_subj = teacher_subject.strip().lower()
+    l_subj = (lesson_subject or "").strip().lower()
+    if not t_subj or not l_subj:
+        return False
+    return t_subj in l_subj or l_subj in t_subj
 
 
 def ensure_teacher_scope(user: dict, group_name: str, subject: str):
     """
-    Ограничивает доступ только для привязанных преподавателей (у которых задан teacher_subject).
-    Студенты с ролью teacher (teacher_subject = None) могут добавлять ДЗ по любым предметам.
+    Ограничивает доступ по группе и предмету только для роли 'teacher'.
+    Роли 'headman' (староста), 'admin' и 'owner' могут управлять ДЗ по всем предметам группы.
     """
-    teacher_subject = (user.get("teacher_subject") or "").strip()
-    if not teacher_subject:
+    if user.get("role") != "teacher":
         return
 
-    if user.get("group_name") != group_name:
+    teacher_subject = (user.get("teacher_subject") or "").strip()
+    if not teacher_subject:
+        raise HTTPException(
+            status_code=403,
+            detail="Для вашей учётной записи учителя не назначен предмет. Обратитесь к администратору."
+        )
+
+    if user.get("group_name") and user.get("group_name") != group_name:
         raise HTTPException(status_code=403, detail="Вы можете управлять ДЗ только своей группы")
 
     if not _subject_matches(teacher_subject, subject):
@@ -167,7 +180,7 @@ async def create_homework(
         not user
         or user.get("is_banned")
         or not user.get("is_approved")
-        or user["role"] not in ("teacher", "admin", "owner")
+        or user["role"] not in HW_MANAGER_ROLES
     ):
         raise HTTPException(status_code=403, detail="У вас нет прав на добавление ДЗ")
 
@@ -198,13 +211,18 @@ async def create_homework(
 
     target_ids = []
     for rec in recipients:
+        # Автору созданного ДЗ уведомление не отправляем
         if rec["user_id"] == actor_id:
             continue
-        # Привязанным преподавателям отправляем уведомления только по их предмету
-        if rec["role"] == "teacher" and rec["teacher_subject"]:
-            if not _subject_matches(rec["teacher_subject"], data.subject):
-                continue
-        target_ids.append(rec["user_id"])
+
+        role = rec["role"]
+        # Студенты, старосты, админы и владельцы получают уведомления по всем предметам группы
+        if role in ("student", "headman", "admin", "owner"):
+            target_ids.append(rec["user_id"])
+        # Учителя получают уведомления ТОЛЬКО если совпадает их предмет
+        elif role == "teacher":
+            if _subject_matches(rec["teacher_subject"], data.subject):
+                target_ids.append(rec["user_id"])
 
     text = (
         f"📚 <b>Новое ДЗ!</b>\n\n"
@@ -243,7 +261,7 @@ async def update_homework_api(
         not user
         or user.get("is_banned")
         or not user.get("is_approved")
-        or user["role"] not in ("teacher", "admin", "owner")
+        or user["role"] not in HW_MANAGER_ROLES
     ):
         raise HTTPException(status_code=403, detail="У вас нет прав")
 
@@ -276,7 +294,7 @@ async def delete_homework_api(
         not user
         or user.get("is_banned")
         or not user.get("is_approved")
-        or user["role"] not in ("teacher", "admin", "owner")
+        or user["role"] not in HW_MANAGER_ROLES
     ):
         raise HTTPException(status_code=403, detail="У вас нет прав")
 
@@ -298,11 +316,11 @@ async def get_schedule_api(
 
     if user_id:
         requester = await user_service.get_user(user_id)
-        # Если это привязанный преподаватель — жёстко фиксируем его группу и предмет
-        if requester and requester.get("teacher_subject"):
+        # Для роли teacher жёстко фиксируем закреплённую группу и предмет
+        if requester and requester.get("role") == "teacher":
             if requester.get("group_name"):
                 group_name = requester["group_name"]
-            teacher_subject_filter = requester["teacher_subject"]
+            teacher_subject_filter = requester.get("teacher_subject")
 
     if not start:
         today = date.today()
