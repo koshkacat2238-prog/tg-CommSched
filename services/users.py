@@ -8,12 +8,7 @@ async def get_user(user_id: int) -> dict | None:
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            SELECT user_id, username, full_name, role, group_name,
-                   is_approved, is_banned, eng_teacher, chin_teacher, teacher_subject
-            FROM users
-            WHERE user_id = $1
-            """,
+            "SELECT * FROM users WHERE user_id = $1",
             user_id,
         )
         return dict(row) if row else None
