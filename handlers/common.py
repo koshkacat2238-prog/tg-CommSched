@@ -1,13 +1,14 @@
 import html
+
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram import Router, F, Bot
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
-from config import OWNER_ID, WEBAPP_URL, AVAILABLE_GROUPS
-from ui import keyboards, texts
+
+from config import AVAILABLE_GROUPS, OWNER_ID, WEBAPP_URL
 from services import users
+from ui import keyboards, texts
 
 router = Router()
 
@@ -119,11 +120,28 @@ async def choose_group_prompt(cb: CallbackQuery, db_user: dict):
             f"Ваша учётная запись закреплена за группой {db_user.get('group_name')}.",
             show_alert=True
         )
+
+    kb = InlineKeyboardBuilder()
+    for grp in AVAILABLE_GROUPS:
+        kb.button(text=grp, callback_data=f"usr:my_grp:{grp}")
+    kb.button(text="⬅️ Назад", callback_data="menu:main")
+    kb.adjust(2)
+
+    try:
+        await cb.message.edit_text(
+            "📁 <b>Выберите вашу учебную группу:</b>",
+            reply_markup=kb.as_markup()
+        )
+    except TelegramBadRequest:
+        pass
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("usr:my_grp:"))
 async def set_my_group(cb: CallbackQuery, db_user: dict):
+    if db_user.get("teacher_subject"):
+        return await cb.answer("Вы не можете сменить закреплённую группу.", show_alert=True)
+
     new_group = cb.data.split(":", 2)[2]
     if new_group not in AVAILABLE_GROUPS:
         return await cb.answer("Недопустимая группа", show_alert=True)
@@ -131,7 +149,10 @@ async def set_my_group(cb: CallbackQuery, db_user: dict):
     await users.set_group(db_user["user_id"], new_group, db_user["user_id"])
     await cb.answer(f"✅ Ваша группа: {new_group}", show_alert=True)
 
-    await cb.message.edit_text(
-        texts.MENU_MAIN,
-        reply_markup=keyboards.main_menu(db_user["role"])
-    )
+    try:
+        await cb.message.edit_text(
+            texts.MENU_MAIN,
+            reply_markup=keyboards.main_menu(db_user["role"])
+        )
+    except TelegramBadRequest:
+        pass
